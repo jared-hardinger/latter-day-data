@@ -156,6 +156,7 @@ input[type="text"]::placeholder { color: #666; }
   background: #16213e;
   border-radius: 8px;
   padding: 1rem;
+  cursor: pointer;
 }
 #status {
   margin-top: 1rem;
@@ -422,6 +423,12 @@ document.querySelectorAll('.granularity-btns button').forEach(btn => {
 });
 
 // --- Chart ---
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+function formatConference(conf) {
+  const [year, month] = conf.split('-');
+  return `${MONTH_NAMES[parseInt(month, 10) - 1]} ${year}`;
+}
+
 function getGroupKey(meta) {
   if (currentGranularity === 'session') return `${meta.conference}-S${meta.session_order}`;
   if (currentGranularity === 'conference') return meta.conference;
@@ -439,9 +446,9 @@ function groupResults(results) {
         .replace('Saturday', 'Sat').replace('Sunday', 'Sun')
         .replace('Morning', 'AM').replace('Afternoon', 'PM')
         .replace('Evening', 'Eve').replace(' Session', '');
-      label = `${meta.conference} ${shortSession}`;
+      label = `${formatConference(meta.conference)} ${shortSession}`;
     } else if (currentGranularity === 'conference') {
-      label = meta.conference;
+      label = formatConference(meta.conference);
     } else {
       label = String(meta.year);
     }
@@ -555,11 +562,18 @@ function openDrilldown(groupKey, groupLabel) {
       indexAxis: 'y',
       responsive: true,
       maintainAspectRatio: false,
+      onClick: (evt, elements) => {
+        if (elements.length > 0) {
+          const idx = elements[0].index;
+          sessionStorage.setItem('analyzerTalk', JSON.stringify(talkResults[idx].meta));
+          window.location.href = 'talk_analyzer.html';
+        }
+      },
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
-            label: (item) => `${item.raw} occurrences`
+            label: (item) => `${item.raw} occurrences — click to analyze talk`
           }
         }
       },

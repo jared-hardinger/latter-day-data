@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Talk Analyzer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/wordcloud@1/src/wordcloud2.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  padding: 2rem;
+  min-height: 100vh;
+}
+a.back-link {
+  display: inline-block;
+  font-size: 0.85rem;
+  color: #8ab4f8;
+  text-decoration: none;
+  margin-bottom: 1.5rem;
+}
+a.back-link:hover { text-decoration: underline; }
+.talk-header {
+  margin-bottom: 2rem;
+}
+.talk-header h1 {
+  font-size: 1.5rem;
+  color: #fff;
+  margin-bottom: 0.4rem;
+}
+.talk-speaker {
+  font-size: 1.05rem;
+  color: #8ab4f8;
+  margin-bottom: 0.25rem;
+}
+.talk-meta {
+  font-size: 0.85rem;
+  color: #888;
+}
+h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #ccc;
+  margin-bottom: 0.75rem;
+}
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+.section-header h2 { margin-bottom: 0; }
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: #888;
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-label input { cursor: pointer; accent-color: #4a90d9; }
+.section { min-width: 0; }
+.charts-row {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+  margin-bottom: 2.5rem;
+}
+.charts-row .section { flex: 1; }
+.chart-container {
+  position: relative;
+  width: 100%;
+  height: 600px;
+  overflow-y: auto;
+  background: #16213e;
+  border-radius: 8px;
+  padding: 1rem;
+}
+#bar-inner { position: relative; }
+#cloud-container {
+  height: 600px;
+  background: #16213e;
+  border-radius: 8px;
+  overflow: hidden;
+}
+#word-cloud { display: block; }
+#no-talk {
+  color: #aaa;
+  font-size: 1rem;
+}
+#no-talk a { color: #8ab4f8; }
+</style>
+</head>
+<body>
+
+<a class="back-link" href="word_frequency.html">← Conference Explorer</a>
+
+<div id="no-talk" style="display:none">
+  <p>No talk selected. <a href="word_frequency.html">Return to Conference Explorer</a></p>
+</div>
+
+<div id="content" style="display:none">
+  <div class="talk-header">
+    <h1 id="talk-title"></h1>
+    <div class="talk-speaker" id="talk-speaker"></div>
+    <div class="talk-meta" id="talk-meta"></div>
+  </div>
+
+  <div class="charts-row">
+    <div class="section">
+      <div class="section-header">
+        <h2>Top Words &amp; Phrases</h2>
+        <label class="toggle-label">
+          <input type="checkbox" id="group-toggle" checked>
+          Group similar topics
+        </label>
+      </div>
+      <div class="chart-container" id="bar-container">
+        <div id="bar-inner"><canvas id="bar-chart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Word Cloud</h2>
+      <div id="cloud-container">
+        <canvas id="word-cloud"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const LDS_PHRASES = [
+  // Deity & key figures
+  'Jesus Christ', 'Heavenly Father', 'Holy Ghost', 'Holy Spirit', 'Joseph Smith',
+  // Atonement
+  'Atonement of Jesus Christ', 'atoning sacrifice',
+  // Scriptures
+  'Book of Mormon', 'New Testament', 'Old Testament', 'Doctrine and Covenants',
+  'Pearl of Great Price',
+  // Doctrines
+  'Second Coming', 'eternal life', 'eternal family', 'plan of salvation',
+  'plan of happiness', 'First Vision',
+  // Programs & meetings
+  'general conference', 'family home evening', 'come follow me', 'sacrament meeting',
+  // Organizations
+  'Relief Society', 'Young Women', 'Young Men', 'Sunday School',
+  // Governance
+  'stake president', 'mission president', 'ward council', 'high council',
+  'priesthood power', 'priesthood keys', 'temple recommend',
+  // Covenant practices
+  'covenant path', 'fast offerings', 'home teaching', 'visiting teaching',
+  'ministering brothers', 'ministering sisters',
+  // Church identity
+  'Church of Jesus Christ', 'Latter-day Saints',
+  // Other key phrases
+  'word of wisdom', 'law of tithing', 'sacred grove',
+];
+
+const STOP_WORDS = new Set([
+  'a', 'about', 'above', 'after', 'all', 'also', 'am', 'an', 'and', 'any',
+  'are', 'as', 'at', 'be', 'been', 'being', 'but', 'by', 'can', 'could',
+  'did', 'do', 'does', 'doing', 'during', 'each', 'even', 'for', 'from',
+  'get', 'got', 'had', 'has', 'have', 'he', 'her', 'here', 'him', 'his',
+  'how', 'if', 'in', 'into', 'is', 'it', 'its', 'just', 'let', 'like',
+  'me', 'might', 'more', 'most', 'much', 'my', 'no', 'not', 'now', 'of',
+  'on', 'one', 'or', 'our', 'out', 'own', 'said', 'same', 'she', 'so',
+  'some', 'still', 'such', 'than', 'that', 'the', 'their', 'them', 'then',
+  'there', 'these', 'they', 'this', 'those', 'though', 'through', 'to',
+  'too', 'up', 'us', 'very', 'was', 'we', 'were', 'what', 'when', 'where',
+  'which', 'while', 'who', 'will', 'with', 'would', 'you', 'your',
+  'shall', 'thy', 'thee', 'thou', 'unto', 'hath', 'doth',
+  've', 're', 'll', 'don', 'didn', 'isn', 'aren', 'won', 'wouldn', 'couldn',
+  'i', 'it', 'an', 'in', 'on', 'at', 'to', 'of', 'a', 'is', 'be', 'as', 'by',
+  'do', 'if', 'so', 'he', 'me', 'up', 'go', 'am', 'we', 'us', 'or', 'no', 'my',
+  // common words that add little meaning in this corpus
+  'come', 'said', 'see', 'can', 'now', 'just', 'know', 'think',
+  'say', 'make', 'way', 'day', 'time', 'also', 'well',
+]);
+
+const TOPIC_GROUPS = [
+  { label: 'Jesus Christ / Savior', terms: ['jesus christ', 'savior', 'lord', 'redeemer', 'christ', 'master', 'atonement of jesus christ', 'atoning sacrifice'] },
+  { label: 'God / Heavenly Father', terms: ['god', 'heavenly father', 'father', 'creator', 'almighty'] },
+  { label: 'Holy Ghost / Spirit', terms: ['holy ghost', 'holy spirit', 'spirit', 'comforter', 'revelator'] },
+  { label: 'Faith / Belief', terms: ['faith', 'faithful', 'belief', 'believe', 'trust', 'testimony', 'witness'] },
+  { label: 'Repentance / Forgiveness', terms: ['repentance', 'repent', 'forgiveness', 'forgive', 'mercy', 'grace', 'atone'] },
+  { label: 'Covenant / Ordinance', terms: ['covenant', 'covenants', 'covenant path', 'ordinance', 'ordinances', 'baptism', 'baptize', 'sacred'] },
+  { label: 'Temple', terms: ['temple', 'temples', 'temple recommend', 'endowment'] },
+  { label: 'Prayer / Revelation', terms: ['prayer', 'pray', 'prayers', 'revelation', 'inspiration', 'promptings'] },
+  { label: 'Scripture / Gospel', terms: ['scripture', 'scriptures', 'gospel', 'book of mormon', 'doctrine and covenants', 'pearl of great price', 'new testament', 'old testament', 'come follow me'] },
+  { label: 'Family / Home', terms: ['family', 'families', 'home', 'children', 'parents', 'eternal family', 'family home evening', 'marriage', 'spouse', 'husband', 'wife'] },
+  { label: 'Service / Ministering', terms: ['service', 'serve', 'serving', 'minister', 'ministering', 'ministering brothers', 'ministering sisters', 'charitable', 'giving', 'help', 'helping', 'care'] },
+  { label: 'Love / Charity', terms: ['love', 'charity', 'kindness', 'compassion', 'beloved', 'caring'] },
+  { label: 'Joy / Happiness', terms: ['joy', 'happy', 'happiness', 'rejoice', 'rejoicing', 'gladness'] },
+  { label: 'Peace', terms: ['peace', 'peaceful', 'peacefulness', 'tranquil', 'stillness', 'calm'] },
+  { label: 'Eternal Life / Salvation', terms: ['eternal life', 'salvation', 'eternal', 'everlasting', 'plan of salvation', 'plan of happiness', 'immortality', 'exaltation'] },
+  { label: 'Obedience / Righteousness', terms: ['obedience', 'obey', 'righteous', 'righteousness', 'worthy', 'worthiness', 'integrity'] },
+  { label: 'Church / Priesthood', terms: ['church of jesus christ', 'latter-day saints', 'priesthood', 'priesthood power', 'priesthood keys', 'general conference', 'prophet', 'apostle'] },
+  { label: 'Hope / Strength', terms: ['hope', 'strength', 'courage', 'endure', 'persevere', 'overcome', 'mighty'] },
+  { label: 'Blessings', terms: ['bless', 'blessed', 'blessings', 'blessing'] },
+  { label: 'Individual / Someone', terms: ['individual', 'individuals', 'someone'] },
+];
+
+function groupTerms(terms) {
+  const used = new Set();
+  const grouped = [];
+
+  for (const group of TOPIC_GROUPS) {
+    let totalCount = 0;
+    let bestLabel = null;
+    let bestCount = 0;
+    for (const term of terms) {
+      const lower = term.label.toLowerCase();
+      if (group.terms.includes(lower) && !used.has(lower)) {
+        totalCount += term.count;
+        used.add(lower);
+        if (term.count > bestCount) { bestCount = term.count; bestLabel = term.label; }
+      }
+    }
+    if (totalCount > 0) {
+      grouped.push({ label: group.label, count: totalCount, isGroup: true, bestLabel });
+    }
+  }
+
+  for (const term of terms) {
+    if (!used.has(term.label.toLowerCase())) {
+      grouped.push(term);
+    }
+  }
+
+  return grouped.sort((a, b) => b.count - a.count);
+}
+
+function extractTopTerms(fullText) {
+  const normalized = fullText.toLowerCase()
+    .replace(/[''']/g, "'")
+    .replace(/-/g, ' ')
+    .replace(/[^a-z\s']/g, ' ');
+
+  // Count LDS phrases and track which words they cover
+  const phraseItems = [];
+  const coveredWords = new Set();
+
+  for (const phrase of LDS_PHRASES) {
+    const target = phrase.toLowerCase().replace(/-/g, ' ').replace(/[^a-z\s']/g, ' ');
+    let count = 0, pos = 0;
+    while ((pos = normalized.indexOf(target, pos)) !== -1) { count++; pos += target.length; }
+    if (count > 0) {
+      phraseItems.push({ label: phrase, count });
+      target.split(/\s+/).filter(Boolean).forEach(w => coveredWords.add(w));
+    }
+  }
+
+  // Count single words, excluding stop words and phrase components
+  const wordCounts = new Map();
+  for (const word of normalized.split(/\s+/)) {
+    if (word.length < 3) continue;
+    if (STOP_WORDS.has(word) || coveredWords.has(word)) continue;
+    wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
+  }
+
+  const wordItems = [...wordCounts.entries()].map(([word, count]) => ({
+    label: word[0].toUpperCase() + word.slice(1),
+    count,
+  }));
+
+  return [...phraseItems, ...wordItems].sort((a, b) => b.count - a.count);
+}
+
+let barChartInstance = null;
+
+function renderBarChart(terms) {
+  const top = terms.slice(0, 25);
+  const barHeight = 30;
+  const height = Math.max(200, top.length * barHeight + 60);
+  document.getElementById('bar-inner').style.height = height + 'px';
+
+  if (barChartInstance) { barChartInstance.destroy(); barChartInstance = null; }
+
+  const ctx = document.getElementById('bar-chart').getContext('2d');
+  barChartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: top.map(t => t.label),
+      datasets: [{
+        label: 'Occurrences',
+        data: top.map(t => t.count),
+        backgroundColor: top.map(t => t.isGroup ? '#7c3aed' : '#4a90d9'),
+        borderColor: top.map(t => t.isGroup ? '#a78bfa' : '#6ab0ff'),
+        borderWidth: 1,
+        borderRadius: 3,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (item) => `${item.raw} occurrences` } }
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          ticks: { color: '#aaa', precision: 0 },
+          grid: { color: '#2a2a4a' }
+        },
+        y: {
+          ticks: { color: '#ddd', font: { size: 12 } },
+          grid: { color: '#2a2a4a' }
+        }
+      }
+    }
+  });
+}
+
+function renderWordCloud(terms) {
+  const container = document.getElementById('cloud-container');
+  const canvas = document.getElementById('word-cloud');
+  canvas.width = container.offsetWidth || 800;
+  canvas.height = container.offsetHeight || 600;
+
+  const maxCount = terms[0]?.count || 1;
+  const list = terms.slice(0, 60).map(({ label, count, bestLabel }) => [
+    bestLabel || label,
+    Math.max(16, Math.round((count / maxCount) * 180)),
+  ]);
+
+  const palette = ['#4a90d9', '#6ab0ff', '#e07b39', '#f09a58', '#7ec8e3', '#a78bfa', '#34d399'];
+
+  WordCloud(canvas, {
+    list,
+    gridSize: 2,
+    padding: 1,
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    color: () => palette[Math.floor(Math.random() * palette.length)],
+    backgroundColor: '#16213e',
+    rotateRatio: 0.2,
+    rotationSteps: 2,
+    shuffle: true,
+    drawOutOfBound: false,
+  });
+}
+
+// --- Init ---
+const MONTH_NAMES = ['January','February','March','April','May','June',
+  'July','August','September','October','November','December'];
+
+const talk = JSON.parse(sessionStorage.getItem('analyzerTalk') || 'null');
+
+if (!talk) {
+  document.getElementById('no-talk').style.display = 'block';
+} else {
+  document.getElementById('content').style.display = 'block';
+
+  document.getElementById('talk-title').textContent = talk.title;
+  document.getElementById('talk-speaker').textContent = talk.speaker;
+
+  const [year, month] = talk.conference.split('-');
+  const confLabel = `${MONTH_NAMES[parseInt(month, 10) - 1]} ${year}`;
+  const shortSession = talk.session
+    .replace('Saturday', 'Sat').replace('Sunday', 'Sun')
+    .replace('Morning', 'AM').replace('Afternoon', 'PM')
+    .replace('Evening', 'Eve').replace(' Session', '');
+  document.getElementById('talk-meta').textContent = `${confLabel} · ${shortSession}`;
+
+  document.title = `${talk.title} — Talk Analyzer`;
+
+  const rawTerms = extractTopTerms(talk.full_text);
+
+  function redraw() {
+    const terms = document.getElementById('group-toggle').checked
+      ? groupTerms(rawTerms)
+      : rawTerms;
+    renderBarChart(terms);
+    renderWordCloud(terms);
+  }
+
+  document.getElementById('group-toggle').addEventListener('change', redraw);
+
+  redraw();
+}
+</script>
+</body>
+</html>
