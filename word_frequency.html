@@ -23,7 +23,7 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 1rem;
-  align-items: center;
+  align-items: flex-end;
   margin-bottom: 1.5rem;
 }
 .controls label {
@@ -41,7 +41,7 @@ input[type="text"] {
   border-radius: 4px;
   background: #16213e;
   color: #fff;
-  width: 200px;
+  width: 100%;
 }
 input[type="text"]::placeholder { color: #666; }
 .granularity-btns {
@@ -72,6 +72,44 @@ input[type="text"]::placeholder { color: #666; }
   font-size: 0.85rem;
 }
 .checkbox-group input { cursor: pointer; }
+.tooltip-anchor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+  border-radius: 50%;
+  background: #2a3a5e;
+  border: 1px solid #4a6a9e;
+  color: #8ab4f8;
+  font-size: 0.7rem;
+  font-weight: bold;
+  cursor: default;
+  position: relative;
+  vertical-align: middle;
+  line-height: 1;
+}
+.tooltip-anchor:focus { outline: 1px solid #8ab4f8; }
+.tooltip-box {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  background: #0d1b36;
+  border: 1px solid #3a5a8e;
+  color: #ccc;
+  font-size: 0.78rem;
+  font-weight: normal;
+  line-height: 1.4;
+  padding: 0.5rem 0.65rem;
+  border-radius: 5px;
+  white-space: nowrap;
+  z-index: 10;
+  pointer-events: none;
+}
+.tooltip-anchor:hover .tooltip-box,
+.tooltip-anchor:focus .tooltip-box { display: block; }
 #matched {
   font-size: 0.85rem;
   color: #8ab4f8;
@@ -133,9 +171,9 @@ input[type="text"]::placeholder { color: #666; }
     <label>Load JSONL file</label><br>
     <input type="file" id="file-input" accept=".jsonl,.json">
   </div>
-  <div>
-    <label>Search word</label><br>
-    <input type="text" id="search-input" placeholder="e.g. minister" disabled>
+  <div style="flex: 1; min-width: 150px;">
+    <label>Word or phrase <span class="tooltip-anchor" tabindex="0" aria-label="Search help">?<span class="tooltip-box">Single word: matches all forms (e.g. "pray" finds prays, prayed, praying).<br>Multiple words: exact phrase match (e.g. "Second Coming").</span></span></label><br>
+    <input type="text" id="search-input" placeholder="e.g. minister or Second Coming" disabled>
   </div>
   <div>
     <label>Granularity</label><br>
@@ -332,26 +370,41 @@ function doSearch() {
     clearChart();
     return;
   }
-  const queryStem = stemmer(query);
   const talksOnly = talksOnlyCheckbox.checked;
-
-  const allSurface = new Set();
+  const words = query.split(/\s+/);
+  const isPhrase = words.length > 1;
   const results = []; // {meta, count}
 
-  for (const entry of talkIndex) {
-    if (talksOnly && entry.meta.type !== 'talk') continue;
-    const count = entry.stemCounts.get(queryStem) || 0;
-    if (count > 0 && entry.surfaceForms.has(queryStem)) {
-      entry.surfaceForms.get(queryStem).forEach(f => allSurface.add(f));
+  if (isPhrase) {
+    for (const entry of talkIndex) {
+      if (talksOnly && entry.meta.type !== 'talk') continue;
+      const text = entry.meta.full_text.toLowerCase().replace(/[''']/g, "'");
+      let count = 0;
+      let pos = 0;
+      while ((pos = text.indexOf(query, pos)) !== -1) { count++; pos += query.length; }
+      results.push({ meta: entry.meta, count });
     }
-    results.push({ meta: entry.meta, count });
+    const totalCount = results.reduce((s, r) => s + r.count, 0);
+    matchedEl.textContent = totalCount > 0
+      ? `Phrase "${query}" — ${totalCount} total occurrences`
+      : `No matches for phrase "${query}"`;
+  } else {
+    const queryStem = stemmer(query);
+    const allSurface = new Set();
+    for (const entry of talkIndex) {
+      if (talksOnly && entry.meta.type !== 'talk') continue;
+      const count = entry.stemCounts.get(queryStem) || 0;
+      if (count > 0 && entry.surfaceForms.has(queryStem)) {
+        entry.surfaceForms.get(queryStem).forEach(f => allSurface.add(f));
+      }
+      results.push({ meta: entry.meta, count });
+    }
+    const totalCount = results.reduce((s, r) => s + r.count, 0);
+    const forms = [...allSurface].sort().join(', ');
+    matchedEl.textContent = totalCount > 0
+      ? `Matched forms: ${forms} — ${totalCount} total occurrences`
+      : `No matches for "${query}" (stem: ${queryStem})`;
   }
-
-  const totalCount = results.reduce((s, r) => s + r.count, 0);
-  const forms = [...allSurface].sort().join(', ');
-  matchedEl.textContent = totalCount > 0
-    ? `Matched forms: ${forms} — ${totalCount} total occurrences`
-    : `No matches for "${query}" (stem: ${queryStem})`;
 
   lastResults = results;
   renderChart(results);
