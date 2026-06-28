@@ -26,13 +26,17 @@ h1 {
   align-items: flex-end;
   margin-bottom: 1.5rem;
 }
+a.back-link {
+  display: inline-block;
+  font-size: 0.85rem;
+  color: #8ab4f8;
+  text-decoration: none;
+  margin-bottom: 1.5rem;
+}
+a.back-link:hover { text-decoration: underline; }
 .controls label {
   font-size: 0.85rem;
   color: #aaa;
-}
-input[type="file"] {
-  font-size: 0.85rem;
-  color: #ccc;
 }
 input[type="text"] {
   padding: 0.5rem 0.75rem;
@@ -166,12 +170,9 @@ input[type="text"]::placeholder { color: #666; }
 </style>
 </head>
 <body>
+<a class="back-link" href="index.html">← Latter-day Data</a>
 <h1>Conference Word Frequency Explorer</h1>
 <div class="controls">
-  <div>
-    <label>Load JSONL file</label><br>
-    <input type="file" id="file-input" accept=".jsonl,.json">
-  </div>
   <div style="flex: 1; min-width: 150px;">
     <label>Word or phrase <span class="tooltip-anchor" tabindex="0" aria-label="Search help">?<span class="tooltip-box">Single word: matches all forms (e.g. "pray" finds prays, prayed, praying).<br>Multiple words: exact phrase match (e.g. "Second Coming").</span></span></label><br>
     <input type="text" id="search-input" placeholder="e.g. minister or Second Coming" disabled>
@@ -202,7 +203,7 @@ input[type="text"]::placeholder { color: #666; }
     <canvas id="drilldown-chart"></canvas>
   </div>
 </div>
-<div id="status">Load a JSONL or JSON file to begin.</div>
+<div id="status">Loading conferences...</div>
 
 <script>
 // --- Porter Stemmer (classic implementation) ---
@@ -312,30 +313,30 @@ let lastResults = [];
 let lastGroupKeys = []; // parallel to chart bars: group key per bar
 let currentGranularity = 'conference';
 
-const fileInput = document.getElementById('file-input');
 const searchInput = document.getElementById('search-input');
 const matchedEl = document.getElementById('matched');
 const statusEl = document.getElementById('status');
 const talksOnlyCheckbox = document.getElementById('talks-only');
 
-// --- File Loading ---
-fileInput.addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  statusEl.textContent = 'Loading...';
-  const text = await file.text();
-
-  if (file.name.endsWith('.jsonl')) {
-    talks = text.trim().split('\n').map(line => JSON.parse(line));
-  } else {
-    talks = JSON.parse(text);
+// --- Data Loading ---
+async function loadData() {
+  try {
+    const index = await fetch('data/index.json').then(r => r.json());
+    const conferenceData = await Promise.all(
+      index.map(conf => fetch(`data/${conf.id}.json`).then(r => r.json()))
+    );
+    talks = conferenceData.flat();
+    buildIndex();
+    statusEl.textContent = `Loaded ${talks.length} talks from ${index.length} conferences.`;
+    searchInput.disabled = false;
+    searchInput.focus();
+  } catch (err) {
+    statusEl.textContent = 'Error loading data. Please refresh and try again.';
+    console.error(err);
   }
+}
 
-  buildIndex();
-  statusEl.textContent = `Loaded ${talks.length} talks from ${file.name}.`;
-  searchInput.disabled = false;
-  searchInput.focus();
-});
+loadData();
 
 function tokenize(text) {
   return text.toLowerCase().replace(/[’‘']/g, "'").split(/[^a-z']+/).filter(w => w.length > 1);

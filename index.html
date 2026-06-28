@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Latter-day Data</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  min-height: 100vh;
+  padding: 3rem 2rem;
+}
+.site-header {
+  max-width: 720px;
+  margin: 0 auto 3rem;
+}
+.site-header h1 {
+  font-size: 2rem;
+  color: #fff;
+  margin-bottom: 0.5rem;
+}
+.site-header p {
+  font-size: 1.05rem;
+  color: #999;
+  line-height: 1.5;
+}
+.tools {
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.tool-card {
+  display: block;
+  background: #16213e;
+  border: 1px solid #2a3a5e;
+  border-radius: 10px;
+  padding: 1.5rem;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tool-card:hover {
+  border-color: #4a90d9;
+  background: #1a2a4e;
+}
+.tool-card h2 {
+  font-size: 1.1rem;
+  color: #fff;
+  margin-bottom: 0.4rem;
+}
+.tool-card p {
+  font-size: 0.92rem;
+  color: #999;
+  line-height: 1.5;
+}
+.tool-card .tag {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #4a90d9;
+  border: 1px solid #2a5a9e;
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  margin-bottom: 0.75rem;
+}
+.tool-card .tag.coming-soon {
+  color: #888;
+  border-color: #444;
+}
+.footer {
+  max-width: 720px;
+  margin: 3rem auto 0;
+  font-size: 0.8rem;
+  color: #555;
+}
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <h1>Latter-day Data</h1>
+  <p>Tools for exploring General Conference talks from The Church of Jesus Christ of Latter-day Saints.</p>
+</header>
+
+<div class="tools">
+
+  <a class="tool-card" href="word_frequency.html">
+    <div class="tag">Available</div>
+    <h2>Conference Explorer</h2>
+    <p>Search for any word or phrase and see how often it appears across conferences over time. Drill into a conference to see which talks use it most, then open any talk for a full word analysis and word cloud.</p>
+  </a>
+
+  <div class="tool-card" style="cursor: default;">
+    <div class="tag coming-soon">Coming Soon</div>
+    <h2>Conference Theme Explorer</h2>
+    <p>See the distinctive topics of a single conference — which themes were emphasized, and how each talk contributed to them. No search required.</p>
+  </div>
+
+  <div class="tool-card" style="cursor: default;">
+    <div class="tag coming-soon">Coming Soon</div>
+    <h2>Scripture Reference Explorer</h2>
+    <p>Visualize which scriptures are cited most often, how citation patterns shift across conferences, and which speakers draw on particular books.</p>
+  </div>
+
+</div>
+
+<footer class="footer">
+  <p>Data sourced from <a href="https://www.churchofjesuschrist.org/study/general-conference" style="color: #555;">churchofjesuschrist.org</a>. Covers April 2021 – April 2026.</p>
+</footer>
+
+</body>
+</html>

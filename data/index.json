@@ -1,0 +1,79 @@
+[
+  {
+    "id": "2021-04",
+    "label": "April 2021",
+    "year": 2021,
+    "month": 4,
+    "talkCount": 37
+  },
+  {
+    "id": "2021-10",
+    "label": "October 2021",
+    "year": 2021,
+    "month": 10,
+    "talkCount": 40
+  },
+  {
+    "id": "2022-04",
+    "label": "April 2022",
+    "year": 2022,
+    "month": 4,
+    "talkCount": 38
+  },
+  {
+    "id": "2022-10",
+    "label": "October 2022",
+    "year": 2022,
+    "month": 10,
+    "talkCount": 36
+  },
+  {
+    "id": "2023-04",
+    "label": "April 2023",
+    "year": 2023,
+    "month": 4,
+    "talkCount": 35
+  },
+  {
+    "id": "2023-10",
+    "label": "October 2023",
+    "year": 2023,
+    "month": 10,
+    "talkCount": 33
+  },
+  {
+    "id": "2024-04",
+    "label": "April 2024",
+    "year": 2024,
+    "month": 4,
+    "talkCount": 34
+  },
+  {
+    "id": "2024-10",
+    "label": "October 2024",
+    "year": 2024,
+    "month": 10,
+    "talkCount": 35
+  },
+  {
+    "id": "2025-04",
+    "label": "April 2025",
+    "year": 2025,
+    "month": 4,
+    "talkCount": 34
+  },
+  {
+    "id": "2025-10",
+    "label": "October 2025",
+    "year": 2025,
+    "month": 10,
+    "talkCount": 35
+  },
+  {
+    "id": "2026-04",
+    "label": "April 2026",
+    "year": 2026,
+    "month": 4,
+    "talkCount": 37
+  }
+]
