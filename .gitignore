@@ -1,5 +1,7 @@
 .DS_Store
 conference_cache/
+scriptures/cache/
+scriptures/*.db.tmp
 general_conference_talks_apr2021-apr2026.jsonl
 __pycache__/
 *.pyc

@@ -1,4 +1,67 @@
-# General Conference Talk Corpus Builder
+# Latter-day Data
+
+Datasets and tools around the scriptures and General Conference talks of the
+Church of Jesus Christ of Latter-day Saints.
+
+- **[Scripture database](#scripture-database)** — every verse of the standard
+  works in a SQLite file (`scriptures/scriptures.db`), a foundation for other
+  tools.
+- **[Conference talk corpus](#general-conference-talk-corpus-builder)** — full
+  text of General Conference talks scraped into JSON, with static HTML
+  explorers (`index.html`, `word_frequency.html`, `talk_analyzer.html`).
+
+## Scripture Database
+
+`scriptures/scriptures.db` holds all 41,995 verses of the LDS canon — Old
+Testament, New Testament, Book of Mormon, Doctrine and Covenants, and Pearl of
+Great Price — loaded from the public-domain
+[LDS Documentation Project](https://github.com/beandog/lds-scriptures) dataset.
+The database is committed to the repo, so tools can use it directly with no
+build step.
+
+### Schema
+
+Three tables plus a convenience view:
+
+| table | columns | notes |
+|---|---|---|
+| `volumes` | `id`, `name` | 1=Old Testament, 2=New Testament, 3=Book of Mormon, 4=Doctrine and Covenants, 5=Pearl of Great Price |
+| `books` | `id`, `volume_id`, `name`, `position` | 87 books; `position` = canonical order within the volume |
+| `verses` | `id`, `book_id`, `chapter`, `verse`, `text` | one row per verse; D&C section numbers live in `chapter` |
+| `v_verses` (view) | `id`, `volume_id`, `volume`, `book_id`, `book`, `chapter`, `verse`, `text` | flat join for easy querying |
+
+```sql
+sqlite3 scriptures/scriptures.db \
+  "SELECT text FROM v_verses WHERE book = '1 Nephi' AND chapter = 3 AND verse = 7"
+```
+
+**ID stability guarantee:** IDs come from the source dataset, which numbers
+volumes, books, and verses sequentially in canonical order. Rebuilding from
+the same source produces a byte-identical database, so other tools may safely
+store verse IDs.
+
+**Caveats:** The text is the public-domain editions, which differ from the
+current church edition only in typography (straight vs. curly apostrophes,
+`æ` ligatures) — a 40-verse spot-check against churchofjesuschrist.org found
+zero wording differences. Official Declarations 1 and 2 are prose rather than
+versed scripture and are not included; the D&C here is Sections 1–138.
+
+### Scripts
+
+```bash
+# Rebuild the database (source CSV is cached under scriptures/cache/)
+python scriptures/build_scriptures_db.py            # --refresh re-downloads
+
+# Spot-check random verses against churchofjesuschrist.org
+python scriptures/verify_scriptures.py              # -n 20 --seed 42 --delay 1.0
+```
+
+The build fails loudly if the loaded data doesn't match the expected canon
+(5 volumes, 39/27/15/1/5 books, 41,995 verses, 138 D&C sections). The verify
+script reports per-verse `EXACT` / `PUNCTUATION` / `DIFFERS` / `MISSING` and
+needs `requests beautifulsoup4 lxml` (same as the scraper below).
+
+## General Conference Talk Corpus Builder
 
 Pulls the full text of General Conference talks from the official source
 (`churchofjesuschrist.org`) into a structured JSON database for personal study
