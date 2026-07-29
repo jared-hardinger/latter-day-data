@@ -47,11 +47,48 @@ against churchofjesuschrist.org found zero wording differences. Official
 Declarations 1 and 2 are prose rather than versed scripture and are not
 included; the D&C here is Sections 1–138.
 
+### Full-text search
+
+`scriptures.db` carries no search index. That keeps it small and its rebuilds
+byte-identical. To search the text, build the derived database:
+
+```bash
+python scriptures/build_fts_db.py     # writes scriptures/scriptures_fts.db (~11 MB)
+```
+
+It copies `scriptures.db` and adds `verses_fts`, an FTS5 index over the verse
+text. The file is gitignored — delete it any time; the rebuild takes under a
+second.
+
+Query with `MATCH` and sort by `rank` (BM25 relevance, best match first):
+
+```sql
+SELECT b.name, v.chapter, v.verse
+FROM verses_fts f
+JOIN verses v ON v.id = f.rowid
+JOIN books b ON b.id = v.book_id
+WHERE verses_fts MATCH '"still small voice"'
+ORDER BY rank;
+```
+
+`MATCH` takes words (`charity`), phrases (`"still small voice"`), prefixes
+(`believ*`), booleans (`repentance NOT baptism`), and proximity
+(`NEAR(faith works, 5)`). The `snippet()` function returns each hit with
+surrounding context.
+
+Two cautions. `MATCH` is a query language, not a plain string — wrap raw user
+input in double quotes or catch the syntax error it throws. And there is no
+stemmer: KJV forms like `believeth` are their own words. Use a prefix query;
+`believ*` catches them all.
+
 ### Scripts
 
 ```bash
 # Rebuild the database (source CSV is cached under scriptures/cache/)
 python scriptures/build_scriptures_db.py            # --refresh re-downloads
+
+# Build the full-text search database (gitignored, derived from scriptures.db)
+python scriptures/build_fts_db.py
 
 # Spot-check random verses against churchofjesuschrist.org
 python scriptures/verify_scriptures.py              # -n 20 --seed 42 --delay 1.0

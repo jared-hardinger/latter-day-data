@@ -5,3 +5,4 @@ scriptures/*.db.tmp
 general_conference_talks_apr2021-apr2026.jsonl
 __pycache__/
 *.pyc
+scriptures/scriptures_fts.db
