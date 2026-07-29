@@ -1,0 +1,38 @@
+[
+  {
+    "name": "Prayer",
+    "description": "The act of praying, communicating with God, our Heavenly Father.",
+    "verses": [
+      {
+        "reference": "Psalms 102:17",
+        "status": "approved",
+        "source": "prefix",
+        "note": ""
+      },
+      {
+        "reference": "1 Thessalonians 5:17",
+        "status": "approved",
+        "source": "prefix",
+        "note": ""
+      },
+      {
+        "reference": "1 Thessalonians 5:25",
+        "status": "approved",
+        "source": "prefix",
+        "note": ""
+      },
+      {
+        "reference": "3 Nephi 19:32",
+        "status": "approved",
+        "source": "prefix",
+        "note": "Example of Jesus praying"
+      },
+      {
+        "reference": "Doctrine and Covenants 31:12",
+        "status": "approved",
+        "source": "prefix",
+        "note": ""
+      }
+    ]
+  }
+]

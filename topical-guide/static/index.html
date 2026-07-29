@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Topical Guide</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  min-height: 100vh;
+  padding: 3rem 2rem 6rem;
+}
+a { color: #4a90d9; }
+#app {
+  max-width: 760px;
+  margin: 0 auto;
+}
+h1 {
+  font-size: 1.9rem;
+  color: #fff;
+  margin-bottom: 0.4rem;
+}
+.subtitle {
+  color: #999;
+  margin-bottom: 2rem;
+  line-height: 1.5;
+}
+.back-link {
+  display: inline-block;
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+.card {
+  background: #16213e;
+  border: 1px solid #2a3a5e;
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1rem;
+}
+.topic-list { list-style: none; }
+.topic-list li { margin-bottom: 0.9rem; }
+.topic-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+.topic-link:hover {
+  border-color: #4a90d9;
+  background: #1a2a4e;
+}
+.topic-name {
+  font-size: 1.1rem;
+  color: #fff;
+  font-weight: 600;
+}
+.topic-desc {
+  color: #999;
+  font-size: 0.9rem;
+  margin-top: 0.25rem;
+}
+.count-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: #4a90d9;
+  border: 1px solid #2a5a9e;
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  margin-top: 0.5rem;
+}
+.empty-state {
+  color: #999;
+  font-style: italic;
+  padding: 1rem 0;
+}
+form.inline-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+input[type="text"], textarea, select {
+  background: #0f1626;
+  border: 1px solid #2a3a5e;
+  border-radius: 6px;
+  color: #e0e0e0;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+input[type="text"]:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: #4a90d9;
+}
+button {
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  border: 1px solid #2a5a9e;
+  background: #1a2a4e;
+  color: #e0e0e0;
+  padding: 0.5rem 1rem;
+  transition: background 0.15s, border-color 0.15s;
+}
+button:hover { background: #223466; border-color: #4a90d9; }
+button.primary { background: #2a5a9e; border-color: #4a90d9; color: #fff; }
+button.primary:hover { background: #3068b4; }
+button.link-btn {
+  background: none;
+  border: none;
+  color: #999;
+  text-decoration: underline;
+  padding: 0.2rem 0.4rem;
+}
+button.link-btn:hover { color: #4a90d9; background: none; }
+button.btn-approve { border-color: #2a9e5a; }
+button.btn-approve:hover { background: #1a4e2a; border-color: #4ad98a; }
+button.btn-reject { border-color: #9e2a2a; }
+button.btn-reject:hover { background: #4e1a1a; border-color: #d94a4a; }
+.error-msg {
+  color: #ff8080;
+  font-size: 0.88rem;
+  margin-top: 0.4rem;
+}
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid #2a3a5e;
+}
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: #999;
+  padding: 0.6rem 0.2rem;
+  margin-right: 1.5rem;
+  font-size: 1rem;
+}
+.tab-btn:hover { background: none; color: #ccc; }
+.tab-btn.active { color: #fff; border-bottom-color: #4a90d9; }
+.verse-block { margin-bottom: 1.5rem; }
+.verse-ref {
+  font-weight: 600;
+  color: #4a90d9;
+  font-size: 0.95rem;
+  margin-bottom: 0.3rem;
+}
+.verse-text { line-height: 1.6; }
+.verse-note {
+  margin-top: 0.4rem;
+  padding: 0.5rem 0.8rem;
+  background: #0f1626;
+  border-left: 3px solid #4a90d9;
+  color: #ccc;
+  font-size: 0.9rem;
+  font-style: italic;
+}
+.search-bar {
+  display: flex;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+.search-bar input[type="text"] { flex: 1; min-width: 200px; }
+.match-count {
+  color: #999;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+.result {
+  list-style: none;
+  border-bottom: 1px solid #2a3a5e;
+  padding: 1rem 0;
+}
+.result:last-child { border-bottom: none; }
+.result-ref {
+  font-weight: 600;
+  color: #4a90d9;
+  font-size: 0.9rem;
+  margin-bottom: 0.3rem;
+}
+.result-text { line-height: 1.5; margin-bottom: 0.6rem; }
+.result-text mark {
+  background: #4a90d9;
+  color: #0d1424;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.result-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.badge {
+  display: inline-block;
+  font-size: 0.78rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.7rem;
+}
+.badge-approved { color: #4ad98a; border: 1px solid #2a9e5a; }
+.badge-rejected { color: #d94a4a; border: 1px solid #9e2a2a; }
+.note-row { width: 100%; margin-top: 0.3rem; }
+.note-row input { width: 100%; }
+.desc-edit {
+  color: #999;
+  font-size: 0.92rem;
+  margin-bottom: 1.5rem;
+  line-height: 1.5;
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const API = "/api";
+
+async function api(path, method, body) {
+  const opts = { method: method || "GET", headers: {} };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(API + path, opts);
+  if (res.status === 204) return null;
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* empty body */ }
+  if (!res.ok) {
+    const message = (data && data.detail) ? data.detail : ("Request failed (" + res.status + ")");
+    const err = new Error(message);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function el(html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html.trim();
+  return tpl.content.firstElementChild;
+}
+
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+
+function currentRoute() {
+  const hash = location.hash || "#/";
+  const m = hash.match(/^#\/topic\/(\d+)$/);
+  if (m) return { view: "topic", id: Number(m[1]) };
+  return { view: "home" };
+}
+
+async function render() {
+  const app = document.getElementById("app");
+  const route = currentRoute();
+  try {
+    if (route.view === "topic") {
+      await renderTopicPage(app, route.id);
+    } else {
+      await renderHome(app);
+    }
+  } catch (err) {
+    app.innerHTML = `<p class="error-msg">Failed to load: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+window.addEventListener("hashchange", render);
+window.addEventListener("DOMContentLoaded", render);
+
+// ---------------------------------------------------------------------------
+// Home view
+// ---------------------------------------------------------------------------
+
+async function renderHome(app) {
+  const topics = await api("/topics");
+  app.innerHTML = `
+    <h1>Topical Guide</h1>
+    <p class="subtitle">A personal, curated guide to the scriptures — search, approve, and study by topic.</p>
+    <div class="card">
+      <form class="inline-form" id="new-topic-form">
+        <input type="text" id="new-topic-name" placeholder="New topic name (e.g. Prayer)" required>
+        <input type="text" id="new-topic-desc" placeholder="Description (optional)">
+        <div>
+          <button type="submit" class="primary">Add Topic</button>
+        </div>
+        <div class="error-msg" id="new-topic-error"></div>
+      </form>
+    </div>
+    <ul class="topic-list" id="topic-list"></ul>
+  `;
+
+  const list = document.getElementById("topic-list");
+  if (topics.length === 0) {
+    list.innerHTML = `<li class="empty-state">No topics yet — add one above to get started.</li>`;
+  } else {
+    list.innerHTML = topics.map(t => `
+      <li>
+        <a class="topic-link card" href="#/topic/${t.id}">
+          <div class="topic-name">${escapeHtml(t.name)}</div>
+          ${t.description ? `<div class="topic-desc">${escapeHtml(t.description)}</div>` : ""}
+          <div class="count-badge">${t.approved_count} approved verse${t.approved_count === 1 ? "" : "s"}</div>
+        </a>
+      </li>
+    `).join("");
+  }
+
+  document.getElementById("new-topic-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("new-topic-name").value.trim();
+    const description = document.getElementById("new-topic-desc").value.trim();
+    const errBox = document.getElementById("new-topic-error");
+    errBox.textContent = "";
+    if (!name) return;
+    try {
+      const topic = await api("/topics", "POST", { name, description });
+      location.hash = `#/topic/${topic.id}`;
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Topic page
+// ---------------------------------------------------------------------------
+
+let curateState = null; // { topicId, mode, results, total, query }
+
+async function renderTopicPage(app, topicId, activeTab) {
+  activeTab = activeTab || "study";
+  const topic = await api(`/topics/${topicId}`);
+
+  app.innerHTML = `
+    <a class="back-link" href="#/">&larr; All topics</a>
+    <h1>${escapeHtml(topic.name)}</h1>
+    ${topic.description ? `<p class="desc-edit">${escapeHtml(topic.description)}</p>` : ""}
+    <div class="tabs">
+      <button class="tab-btn" data-tab="study">Study</button>
+      <button class="tab-btn" data-tab="curate">Curate</button>
+    </div>
+    <div id="tab-content"></div>
+  `;
+
+  const tabButtons = app.querySelectorAll(".tab-btn");
+  tabButtons.forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.tab === activeTab);
+    btn.addEventListener("click", () => {
+      renderTopicPage(app, topicId, btn.dataset.tab);
+    });
+  });
+
+  const content = document.getElementById("tab-content");
+  if (activeTab === "study") {
+    renderStudyTab(content, topic);
+  } else {
+    renderCurateTab(content, topic);
+  }
+}
+
+function renderStudyTab(content, topic) {
+  if (topic.verses.length === 0) {
+    content.innerHTML = `<p class="empty-state">No approved verses yet. Switch to the Curate tab to search and approve some.</p>`;
+    return;
+  }
+  content.innerHTML = topic.verses.map(v => `
+    <div class="verse-block">
+      <div class="verse-ref">${escapeHtml(v.reference)}</div>
+      <div class="verse-text">${escapeHtml(v.text)}</div>
+      ${v.note ? `<div class="verse-note">${escapeHtml(v.note)}</div>` : ""}
+    </div>
+  `).join("");
+}
+
+const MODE_LABELS = {
+  prefix: "Word forms",
+  exact: "Exact",
+  phrase: "Phrase",
+};
+
+function renderCurateTab(content, topic) {
+  if (!curateState || curateState.topicId !== topic.id) {
+    curateState = { topicId: topic.id, mode: "prefix", results: [], total: 0, query: "" };
+  }
+  const state = curateState;
+
+  content.innerHTML = `
+    <div class="search-bar">
+      <input type="text" id="search-q" placeholder="Search scripture text…" value="${escapeHtml(state.query)}">
+      <select id="search-mode">
+        ${Object.entries(MODE_LABELS).map(([v, label]) =>
+          `<option value="${v}" ${v === state.mode ? "selected" : ""}>${label}</option>`
+        ).join("")}
+      </select>
+      <button id="search-btn" class="primary">Search</button>
+    </div>
+    <div class="error-msg" id="search-error"></div>
+    <div class="match-count" id="match-count"></div>
+    <ul id="results"></ul>
+  `;
+
+  const qInput = document.getElementById("search-q");
+  const modeSelect = document.getElementById("search-mode");
+  const runSearch = () => doSearch(content, topic.id, qInput.value.trim(), modeSelect.value);
+
+  document.getElementById("search-btn").addEventListener("click", runSearch);
+  qInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") runSearch();
+  });
+
+  if (state.results.length > 0 || state.query) {
+    renderResults(content, topic.id);
+  }
+}
+
+async function doSearch(content, topicId, query, mode) {
+  const errBox = document.getElementById("search-error");
+  errBox.textContent = "";
+  if (!query) return;
+  curateState.mode = mode;
+  curateState.query = query;
+  try {
+    const data = await api(`/search?q=${encodeURIComponent(query)}&mode=${encodeURIComponent(mode)}&topic_id=${topicId}`);
+    curateState.results = data.results;
+    curateState.total = data.total;
+    renderResults(content, topicId);
+  } catch (err) {
+    curateState.results = [];
+    curateState.total = 0;
+    document.getElementById("match-count").textContent = "";
+    document.getElementById("results").innerHTML = "";
+    errBox.textContent = err.message;
+  }
+}
+
+function renderResults(content, topicId) {
+  const state = curateState;
+  document.getElementById("match-count").textContent =
+    state.total > 0
+      ? `${state.total} match${state.total === 1 ? "" : "es"}${state.total > state.results.length ? ` (showing ${state.results.length})` : ""}`
+      : (state.query ? "No matches." : "");
+
+  const resultsEl = document.getElementById("results");
+  resultsEl.innerHTML = state.results.map(renderResultRow).join("");
+
+  resultsEl.querySelectorAll("[data-action]").forEach(node => {
+    const verseId = Number(node.dataset.verseId);
+    const action = node.dataset.action;
+    if (action === "approve" || action === "reject") {
+      node.addEventListener("click", () => setVerseStatus(topicId, verseId, action === "approve" ? "approved" : "rejected"));
+    } else if (action === "undo") {
+      node.addEventListener("click", () => undoVerse(topicId, verseId));
+    }
+  });
+
+  resultsEl.querySelectorAll(".note-input").forEach(input => {
+    const verseId = Number(input.dataset.verseId);
+    input.addEventListener("change", () => saveNote(topicId, verseId, input.value));
+  });
+}
+
+function renderResultRow(r) {
+  let statusHtml;
+  if (r.status_in_topic === "approved") {
+    statusHtml = `
+      <span class="badge badge-approved">Approved</span>
+      <button class="link-btn" data-action="undo" data-verse-id="${r.verse_id}">Undo</button>
+      <div class="note-row">
+        <input type="text" class="note-input" data-verse-id="${r.verse_id}" placeholder="Add a note…" value="${escapeHtml(r.note || "")}">
+      </div>
+    `;
+  } else if (r.status_in_topic === "rejected") {
+    statusHtml = `
+      <span class="badge badge-rejected">Rejected</span>
+      <button class="link-btn" data-action="undo" data-verse-id="${r.verse_id}">Undo</button>
+    `;
+  } else {
+    statusHtml = `
+      <button class="btn-approve" data-action="approve" data-verse-id="${r.verse_id}">Approve</button>
+      <button class="btn-reject" data-action="reject" data-verse-id="${r.verse_id}">Reject</button>
+    `;
+  }
+  return `
+    <li class="result">
+      <div class="result-ref">${escapeHtml(r.reference)}</div>
+      <div class="result-text">${r.highlighted}</div>
+      <div class="result-actions">${statusHtml}</div>
+    </li>
+  `;
+}
+
+function findResult(verseId) {
+  return curateState.results.find(r => r.verse_id === verseId);
+}
+
+async function setVerseStatus(topicId, verseId, status) {
+  const updated = await api(`/topics/${topicId}/verses`, "POST", {
+    verse_id: verseId,
+    status,
+    source: curateState.mode,
+  });
+  const r = findResult(verseId);
+  r.status_in_topic = updated.status;
+  r.note = updated.note;
+  renderResults(document.getElementById("tab-content"), topicId);
+}
+
+async function undoVerse(topicId, verseId) {
+  await api(`/topics/${topicId}/verses/${verseId}`, "DELETE");
+  const r = findResult(verseId);
+  r.status_in_topic = null;
+  r.note = "";
+  renderResults(document.getElementById("tab-content"), topicId);
+}
+
+async function saveNote(topicId, verseId, note) {
+  const updated = await api(`/topics/${topicId}/verses/${verseId}`, "PATCH", { note });
+  const r = findResult(verseId);
+  if (r) r.note = updated.note;
+}
+</script>
+</body>
+</html>

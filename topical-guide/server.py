@@ -1,0 +1,502 @@
+#!/usr/bin/env python3
+"""
+server.py
+=========
+FastAPI backend for the personal topical guide. Serves the JSON API under
+/api and the static vanilla-JS UI at /.
+
+Curated data lives in guide.db (committed — it's the hand-made artifact),
+referencing verses by their stable IDs in scriptures/scriptures.db. Full
+verse text and full-text search both come from scriptures/scriptures_fts.db
+(a superset copy of scriptures.db with an FTS5 index — see
+scriptures/build_fts_db.py), opened read-only so this app can never mutate
+the shared scripture data.
+
+Run with:
+
+    python server.py
+
+which binds to 127.0.0.1:8000. Requires scriptures/scriptures_fts.db to
+exist; build it first with `python scriptures/build_fts_db.py` if missing.
+"""
+
+import json
+import os
+import sqlite3
+import sys
+from typing import Literal, Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+GUIDE_DB_PATH = os.path.join(BASE_DIR, "guide.db")
+EXPORT_PATH = os.path.join(BASE_DIR, "guide_export.json")
+FTS_DB_PATH = os.path.normpath(
+    os.path.join(BASE_DIR, "..", "scriptures", "scriptures_fts.db")
+)
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
+VALID_STATUSES = ("approved", "rejected")
+VALID_SOURCES = ("exact", "prefix", "phrase", "semantic", "manual")
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS topics (
+    id          INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS topic_verses (
+    topic_id  INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    verse_id  INTEGER NOT NULL,
+    status    TEXT NOT NULL CHECK (status IN ('approved', 'rejected')),
+    note      TEXT NOT NULL DEFAULT '',
+    source    TEXT NOT NULL CHECK (source IN ('exact','prefix','phrase','semantic','manual')),
+    added_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (topic_id, verse_id)
+);
+"""
+
+
+def check_fts_db():
+    if not os.path.exists(FTS_DB_PATH):
+        print(
+            "scriptures_fts.db not found. Build it first:\n"
+            "    python scriptures/build_fts_db.py",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def init_guide_db():
+    conn = sqlite3.connect(GUIDE_DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SCHEMA)
+    conn.commit()
+    conn.close()
+
+
+check_fts_db()
+init_guide_db()
+
+app = FastAPI(title="Topical Guide")
+
+
+def get_guide_db():
+    # check_same_thread=False: FastAPI dispatches sync dependencies and sync
+    # endpoint functions to the threadpool independently, so the connection
+    # opened here can be handed off to a different worker thread than the one
+    # that runs the endpoint body. It's still only ever used sequentially
+    # within a single request, never shared across concurrent requests.
+    conn = sqlite3.connect(GUIDE_DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def get_fts_db():
+    conn = sqlite3.connect(
+        f"file:{FTS_DB_PATH}?mode=ro", uri=True, check_same_thread=False
+    )
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def reference_for(fts_db: sqlite3.Connection, verse_id: int) -> Optional[str]:
+    row = fts_db.execute(
+        "SELECT book, chapter, verse FROM v_verses WHERE id = ?", (verse_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return f"{row['book']} {row['chapter']}:{row['verse']}"
+
+
+def write_export(guide_db: sqlite3.Connection):
+    """Rewrite guide_export.json with deterministic ordering so git history
+    shows readable diffs. Reference text (not full verse text) is looked up
+    from scriptures_fts.db; the export is a curation record, not a scripture
+    copy."""
+    fts_db = sqlite3.connect(
+        f"file:{FTS_DB_PATH}?mode=ro", uri=True, check_same_thread=False
+    )
+    fts_db.row_factory = sqlite3.Row
+    try:
+        topics = guide_db.execute(
+            "SELECT id, name, description FROM topics ORDER BY name"
+        ).fetchall()
+        export = []
+        for t in topics:
+            links = guide_db.execute(
+                """SELECT verse_id, status, source, note FROM topic_verses
+                   WHERE topic_id = ? ORDER BY verse_id""",
+                (t["id"],),
+            ).fetchall()
+            verses = [
+                {
+                    "reference": reference_for(fts_db, link["verse_id"]),
+                    "status": link["status"],
+                    "source": link["source"],
+                    "note": link["note"],
+                }
+                for link in links
+            ]
+            export.append(
+                {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "verses": verses,
+                }
+            )
+    finally:
+        fts_db.close()
+    with open(EXPORT_PATH, "w") as f:
+        json.dump(export, f, indent=2)
+        f.write("\n")
+
+
+# ---------------------------------------------------------------------------
+# Topics
+# ---------------------------------------------------------------------------
+
+
+class TopicCreate(BaseModel):
+    name: str
+    description: str = ""
+
+
+class TopicUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+def topic_dict(row, approved_count: int) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"],
+        "approved_count": approved_count,
+    }
+
+
+@app.get("/api/topics")
+def list_topics(guide_db=Depends(get_guide_db)):
+    rows = guide_db.execute(
+        """
+        SELECT t.id, t.name, t.description,
+               COUNT(CASE WHEN tv.status = 'approved' THEN 1 END) AS approved_count
+        FROM topics t
+        LEFT JOIN topic_verses tv ON tv.topic_id = t.id
+        GROUP BY t.id
+        ORDER BY t.name
+        """
+    ).fetchall()
+    return [topic_dict(r, r["approved_count"]) for r in rows]
+
+
+@app.post("/api/topics", status_code=201)
+def create_topic(body: TopicCreate, guide_db=Depends(get_guide_db)):
+    try:
+        cur = guide_db.execute(
+            "INSERT INTO topics (name, description) VALUES (?, ?)",
+            (body.name, body.description),
+        )
+        guide_db.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, f"Topic '{body.name}' already exists")
+    write_export(guide_db)
+    row = guide_db.execute(
+        "SELECT id, name, description FROM topics WHERE id = ?", (cur.lastrowid,)
+    ).fetchone()
+    return topic_dict(row, 0)
+
+
+@app.patch("/api/topics/{topic_id}")
+def update_topic(topic_id: int, body: TopicUpdate, guide_db=Depends(get_guide_db)):
+    existing = guide_db.execute(
+        "SELECT * FROM topics WHERE id = ?", (topic_id,)
+    ).fetchone()
+    if existing is None:
+        raise HTTPException(404, "Topic not found")
+    name = body.name if body.name is not None else existing["name"]
+    description = (
+        body.description if body.description is not None else existing["description"]
+    )
+    try:
+        guide_db.execute(
+            "UPDATE topics SET name = ?, description = ? WHERE id = ?",
+            (name, description, topic_id),
+        )
+        guide_db.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, f"Topic '{name}' already exists")
+    write_export(guide_db)
+    approved_count = guide_db.execute(
+        "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND status = 'approved'",
+        (topic_id,),
+    ).fetchone()[0]
+    row = guide_db.execute(
+        "SELECT id, name, description FROM topics WHERE id = ?", (topic_id,)
+    ).fetchone()
+    return topic_dict(row, approved_count)
+
+
+@app.delete("/api/topics/{topic_id}", status_code=204)
+def delete_topic(topic_id: int, guide_db=Depends(get_guide_db)):
+    existing = guide_db.execute(
+        "SELECT id FROM topics WHERE id = ?", (topic_id,)
+    ).fetchone()
+    if existing is None:
+        raise HTTPException(404, "Topic not found")
+    guide_db.execute("DELETE FROM topics WHERE id = ?", (topic_id,))
+    guide_db.commit()
+    write_export(guide_db)
+    return Response(status_code=204)
+
+
+@app.get("/api/topics/{topic_id}")
+def get_topic(
+    topic_id: int, guide_db=Depends(get_guide_db), fts_db=Depends(get_fts_db)
+):
+    topic = guide_db.execute(
+        "SELECT * FROM topics WHERE id = ?", (topic_id,)
+    ).fetchone()
+    if topic is None:
+        raise HTTPException(404, "Topic not found")
+    approved = guide_db.execute(
+        """SELECT verse_id, note, source FROM topic_verses
+           WHERE topic_id = ? AND status = 'approved' ORDER BY verse_id""",
+        (topic_id,),
+    ).fetchall()
+    rejected_count = guide_db.execute(
+        "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND status = 'rejected'",
+        (topic_id,),
+    ).fetchone()[0]
+    verses = []
+    for link in approved:
+        row = fts_db.execute(
+            "SELECT book, chapter, verse, text FROM v_verses WHERE id = ?",
+            (link["verse_id"],),
+        ).fetchone()
+        verses.append(
+            {
+                "verse_id": link["verse_id"],
+                "reference": f"{row['book']} {row['chapter']}:{row['verse']}",
+                "text": row["text"],
+                "note": link["note"],
+                "source": link["source"],
+            }
+        )
+    return {
+        "id": topic["id"],
+        "name": topic["name"],
+        "description": topic["description"],
+        "verses": verses,
+        "rejected_count": rejected_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Topic <-> verse links
+# ---------------------------------------------------------------------------
+
+
+class VerseUpsert(BaseModel):
+    verse_id: int
+    status: Literal["approved", "rejected"]
+    source: Literal["exact", "prefix", "phrase", "semantic", "manual"]
+    note: Optional[str] = None
+
+
+class VerseUpdate(BaseModel):
+    status: Optional[Literal["approved", "rejected"]] = None
+    note: Optional[str] = None
+
+
+@app.post("/api/topics/{topic_id}/verses")
+def upsert_verse(
+    topic_id: int,
+    body: VerseUpsert,
+    guide_db=Depends(get_guide_db),
+    fts_db=Depends(get_fts_db),
+):
+    topic = guide_db.execute(
+        "SELECT id FROM topics WHERE id = ?", (topic_id,)
+    ).fetchone()
+    if topic is None:
+        raise HTTPException(404, "Topic not found")
+    verse = fts_db.execute(
+        "SELECT id FROM verses WHERE id = ?", (body.verse_id,)
+    ).fetchone()
+    if verse is None:
+        raise HTTPException(400, f"Verse {body.verse_id} does not exist")
+
+    # Re-posting to change status (e.g. reject -> approve) must not silently
+    # blow away a note the user already wrote, so only overwrite it when the
+    # caller explicitly supplied one.
+    existing = guide_db.execute(
+        "SELECT note FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
+        (topic_id, body.verse_id),
+    ).fetchone()
+    note = body.note if body.note is not None else (existing["note"] if existing else "")
+
+    guide_db.execute(
+        """
+        INSERT INTO topic_verses (topic_id, verse_id, status, source, note)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (topic_id, verse_id) DO UPDATE SET
+            status = excluded.status,
+            source = excluded.source,
+            note = excluded.note
+        """,
+        (topic_id, body.verse_id, body.status, body.source, note),
+    )
+    guide_db.commit()
+    write_export(guide_db)
+    row = guide_db.execute(
+        "SELECT * FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
+        (topic_id, body.verse_id),
+    ).fetchone()
+    return dict(row)
+
+
+@app.patch("/api/topics/{topic_id}/verses/{verse_id}")
+def update_verse(
+    topic_id: int, verse_id: int, body: VerseUpdate, guide_db=Depends(get_guide_db)
+):
+    existing = guide_db.execute(
+        "SELECT * FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
+        (topic_id, verse_id),
+    ).fetchone()
+    if existing is None:
+        raise HTTPException(404, "Link not found")
+    status = body.status if body.status is not None else existing["status"]
+    note = body.note if body.note is not None else existing["note"]
+    guide_db.execute(
+        "UPDATE topic_verses SET status = ?, note = ? WHERE topic_id = ? AND verse_id = ?",
+        (status, note, topic_id, verse_id),
+    )
+    guide_db.commit()
+    write_export(guide_db)
+    row = guide_db.execute(
+        "SELECT * FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
+        (topic_id, verse_id),
+    ).fetchone()
+    return dict(row)
+
+
+@app.delete("/api/topics/{topic_id}/verses/{verse_id}", status_code=204)
+def delete_verse(topic_id: int, verse_id: int, guide_db=Depends(get_guide_db)):
+    guide_db.execute(
+        "DELETE FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
+        (topic_id, verse_id),
+    )
+    guide_db.commit()
+    write_export(guide_db)
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
+
+
+def build_match_query(q: str, mode: str) -> str:
+    terms = q.split()
+    if not terms:
+        raise HTTPException(400, "Query must not be empty")
+
+    def esc(t: str) -> str:
+        return t.replace('"', '""')
+
+    if mode == "phrase":
+        return f'"{esc(q)}"'
+    if mode == "exact":
+        return " ".join(f'"{esc(t)}"' for t in terms)
+    if mode == "prefix":
+        return " ".join(f'"{esc(t)}"*' for t in terms)
+    raise HTTPException(400, f"Unknown search mode: {mode}")
+
+
+@app.get("/api/search")
+def search(
+    q: str,
+    mode: Literal["prefix", "exact", "phrase"] = "prefix",
+    topic_id: Optional[int] = None,
+    limit: int = Query(50, ge=1, le=500),
+    guide_db=Depends(get_guide_db),
+    fts_db=Depends(get_fts_db),
+):
+    match_query = build_match_query(q, mode)
+
+    if topic_id is not None:
+        topic = guide_db.execute(
+            "SELECT id FROM topics WHERE id = ?", (topic_id,)
+        ).fetchone()
+        if topic is None:
+            raise HTTPException(404, "Topic not found")
+
+    try:
+        rows = fts_db.execute(
+            """
+            SELECT f.rowid AS verse_id,
+                   highlight(verses_fts, 0, '<mark>', '</mark>') AS highlighted
+            FROM verses_fts f
+            WHERE verses_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (match_query, limit),
+        ).fetchall()
+        total = fts_db.execute(
+            "SELECT COUNT(*) FROM verses_fts WHERE verses_fts MATCH ?",
+            (match_query,),
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        raise HTTPException(400, "Invalid search query")
+
+    status_map = {}
+    if topic_id is not None and rows:
+        verse_ids = [r["verse_id"] for r in rows]
+        placeholders = ",".join("?" * len(verse_ids))
+        status_rows = guide_db.execute(
+            f"""SELECT verse_id, status FROM topic_verses
+                WHERE topic_id = ? AND verse_id IN ({placeholders})""",
+            (topic_id, *verse_ids),
+        ).fetchall()
+        status_map = {r["verse_id"]: r["status"] for r in status_rows}
+
+    results = []
+    for row in rows:
+        results.append(
+            {
+                "verse_id": row["verse_id"],
+                "reference": reference_for(fts_db, row["verse_id"]),
+                "highlighted": row["highlighted"],
+                "status_in_topic": status_map.get(row["verse_id"]),
+            }
+        )
+
+    return {"total": total, "results": results}
+
+
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+
+
+def main():
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+
+if __name__ == "__main__":
+    main()

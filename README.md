@@ -9,6 +9,9 @@ Church of Jesus Christ of Latter-day Saints.
 - **[Conference talk corpus](#general-conference-talk-corpus-builder)** — full
   text of General Conference talks scraped into JSON, with static HTML
   explorers (`index.html`, `word_frequency.html`, `talk_analyzer.html`).
+- **[Topical guide](#topical-guide)** — a local app (`topical-guide/`) for
+  curating your own personal topical guide: search the scripture database,
+  approve or reject candidate verses, and study the result by topic.
 
 ## Scripture Database
 
@@ -98,6 +101,50 @@ The build fails loudly if the loaded data doesn't match the expected canon
 (5 volumes, 39/27/15/1/5 books, 41,995 verses, 138 D&C sections). The verify
 script reports per-verse `EXACT` / `PUNCTUATION` / `DIFFERS` / `MISSING` and
 needs `requests beautifulsoup4 lxml` (same as the scraper below).
+
+## Topical Guide
+
+`topical-guide/` is a local web app for curating your own personal topical
+guide to the scriptures: search `scriptures/scriptures.db` for candidate
+verses on a topic, then approve or reject each one — you're always the final
+say. The approved collection becomes a browsable, interactive guide inside
+the same app. It's a separate tool from the conference-talk scripts above,
+but reads the shared scripture database.
+
+### Run it
+
+```bash
+pip install -r topical-guide/requirements.txt
+python scriptures/build_fts_db.py    # only if scriptures_fts.db doesn't exist yet
+python topical-guide/server.py       # binds to 127.0.0.1:8000
+```
+
+Backend is FastAPI, frontend is a single vanilla-JS page (`static/index.html`)
+with hash routing — no build step, matching the repo's other static-HTML
+tools. There's no auth or deployment; it's meant to run locally on your own
+machine.
+
+### What's committed vs. derived
+
+- `topical-guide/guide.db` — your curated topics and verse approvals, in its
+  own SQLite database (verses are referenced by their stable IDs into
+  `scriptures.db`). Created automatically on first run if missing. This is
+  the hand-made, precious artifact — **it's committed to the repo**, same as
+  `scriptures.db`.
+- `topical-guide/guide_export.json` — a plain-text mirror of `guide.db`,
+  rewritten after every change with deterministic ordering so git history
+  shows a readable diff of your curation over time. Also **committed**.
+- `scriptures/scriptures_fts.db` — same derived, gitignored full-text index
+  described above. The server refuses to start without it.
+
+### Search
+
+Search uses the same FTS5 index as above, in three modes: **word forms**
+(the default — `pray` matches `prayer`, `prayeth`, etc. via prefix queries,
+since there's no stemmer), **exact** (whole-word match), and **phrase**
+(the whole query as one quoted phrase). Rejecting a verse in a topic is
+remembered, so the same near-misses don't resurface as fresh candidates on
+the next search.
 
 ## General Conference Talk Corpus Builder
 
