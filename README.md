@@ -42,9 +42,10 @@ store verse IDs.
 
 **Caveats:** The text is the public-domain editions, which differ from the
 current church edition only in typography (straight vs. curly apostrophes,
-`æ` ligatures) — a 40-verse spot-check against churchofjesuschrist.org found
-zero wording differences. Official Declarations 1 and 2 are prose rather than
-versed scripture and are not included; the D&C here is Sections 1–138.
+`æ` ligatures, omitted KJV `¶` paragraph marks) — a 240-verse spot-check
+against churchofjesuschrist.org found zero wording differences. Official
+Declarations 1 and 2 are prose rather than versed scripture and are not
+included; the D&C here is Sections 1–138.
 
 ### Scripts
 

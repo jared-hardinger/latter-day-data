@@ -93,6 +93,7 @@ def normalize(text, punctuation=False):
         text = text.replace("–", "-").replace("—", "-")
         text = text.replace("æ", "ae").replace("Æ", "Ae")
         text = re.sub(r"[^\w\s]", "", text).lower()
+        text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
