@@ -31,11 +31,16 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import ai
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-GUIDE_DB_PATH = os.path.join(BASE_DIR, "guide.db")
-EXPORT_PATH = os.path.join(BASE_DIR, "guide_export.json")
-FTS_DB_PATH = os.path.normpath(
-    os.path.join(BASE_DIR, "..", "scriptures", "scriptures_fts.db")
+GUIDE_DB_PATH = os.environ.get("GUIDE_DB_PATH", os.path.join(BASE_DIR, "guide.db"))
+EXPORT_PATH = os.environ.get(
+    "GUIDE_EXPORT_PATH", os.path.join(BASE_DIR, "guide_export.json")
+)
+FTS_DB_PATH = os.environ.get(
+    "FTS_DB_PATH",
+    os.path.normpath(os.path.join(BASE_DIR, "..", "scriptures", "scriptures_fts.db")),
 )
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
@@ -82,6 +87,7 @@ def init_guide_db():
 
 check_fts_db()
 init_guide_db()
+ai.init_ai_log_db()
 
 app = FastAPI(title="Topical Guide")
 
@@ -487,6 +493,146 @@ def search(
         )
 
     return {"total": total, "results": results}
+
+
+# ---------------------------------------------------------------------------
+# AI writing helpers — fill only, never write to guide.db or trigger
+# write_export. Both endpoints return unsaved values for the user to review
+# and save through the existing endpoints above.
+# ---------------------------------------------------------------------------
+
+
+class TopicFillRequest(BaseModel):
+    prompt: str
+
+
+@app.post("/api/ai/topics/fill")
+def fill_topic(body: TopicFillRequest, guide_db=Depends(get_guide_db)):
+    feature = ai.FEATURES["fill_topic"]
+
+    prompt = body.prompt.strip()
+    if not prompt:
+        raise HTTPException(400, "Describe the topic you want.")
+    if len(prompt) > feature.max_prompt_chars:
+        raise HTTPException(422, "That description is too long.")
+
+    topics = guide_db.execute(
+        "SELECT name, description FROM topics ORDER BY name"
+    ).fetchall()
+    existing_by_casefold = {t["name"].casefold(): t["name"] for t in topics}
+
+    if topics:
+        lines = [
+            f"- {t['name']}: {t['description'].strip() or '(no description)'}"
+            for t in topics
+        ]
+        topic_block = "Existing topics:\n" + "\n".join(lines)
+    else:
+        topic_block = "Existing topics: none yet — this is the first one."
+
+    parsed, _call_id = ai.call_claude(
+        feature=feature.name,
+        model=feature.model,
+        prompt_hash=feature.prompt_hash(),
+        system_text=feature.system_text(topic_block),
+        user_text="The topic to create:\n" + prompt,
+        output_format=ai._TopicFill,
+        max_tokens=feature.max_tokens,
+    )
+    if parsed is None:
+        raise HTTPException(502, ai.AI_SERVICE_ERROR)
+
+    name = parsed.name.strip()
+    if not name:
+        raise HTTPException(502, ai.AI_SERVICE_ERROR)
+    description = parsed.description.strip()[:400]
+    duplicate_of = None
+    if parsed.duplicate_of:
+        duplicate_of = existing_by_casefold.get(parsed.duplicate_of.strip().casefold())
+
+    return {
+        "name": name,
+        "description": description,
+        "duplicate_of": duplicate_of,
+        "reason": parsed.reason,
+    }
+
+
+class NoteFillRequest(BaseModel):
+    prompt: Optional[str] = None
+
+
+@app.post("/api/ai/topics/{topic_id}/verses/{verse_id}/note/fill")
+def fill_note(
+    topic_id: int,
+    verse_id: int,
+    body: NoteFillRequest,
+    guide_db=Depends(get_guide_db),
+    fts_db=Depends(get_fts_db),
+):
+    feature = ai.FEATURES["fill_note"]
+
+    topic = guide_db.execute(
+        "SELECT id, name, description FROM topics WHERE id = ?", (topic_id,)
+    ).fetchone()
+    if topic is None:
+        raise HTTPException(404, "Topic not found")
+
+    verse = fts_db.execute(
+        "SELECT book, chapter, verse, text FROM v_verses WHERE id = ?", (verse_id,)
+    ).fetchone()
+    if verse is None:
+        raise HTTPException(400, f"Verse {verse_id} does not exist")
+
+    prompt = (body.prompt or "").strip()
+    if len(prompt) > feature.max_prompt_chars:
+        raise HTTPException(422, "That note is too long.")
+
+    neighbours = fts_db.execute(
+        """SELECT verse, text FROM v_verses
+           WHERE book = ? AND chapter = ? AND verse BETWEEN ? AND ?
+           ORDER BY verse""",
+        (verse["book"], verse["chapter"], verse["verse"] - 2, verse["verse"] + 2),
+    ).fetchall()
+
+    passage_lines = []
+    for n in neighbours:
+        marker = ">>" if n["verse"] == verse["verse"] else "  "
+        passage_lines.append(
+            f"{marker} {verse['book']} {verse['chapter']}:{n['verse']}  {n['text']}"
+        )
+    passage_block = "Passage (the subject verse is marked >>):\n" + "\n".join(
+        passage_lines
+    )
+
+    context_block = (
+        f"Topic: {topic['name']}\n"
+        f"Topic description: {topic['description']}\n\n"
+        f"{passage_block}"
+    )
+
+    if prompt:
+        user_text = "The curator's own words for this note:\n" + prompt
+    else:
+        user_text = "The curator supplied no words. Draft the note."
+
+    parsed, _call_id = ai.call_claude(
+        feature=feature.name,
+        model=feature.model,
+        prompt_hash=feature.prompt_hash(),
+        system_text=feature.system_text(context_block),
+        user_text=user_text,
+        output_format=ai._NoteFill,
+        max_tokens=feature.max_tokens,
+    )
+    if parsed is None:
+        raise HTTPException(502, ai.AI_SERVICE_ERROR)
+
+    note = parsed.note.strip()[:300]
+    if not note:
+        raise HTTPException(502, ai.AI_SERVICE_ERROR)
+
+    return {"note": note, "reason": parsed.reason}
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

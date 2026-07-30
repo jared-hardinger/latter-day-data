@@ -11,7 +11,9 @@ Church of Jesus Christ of Latter-day Saints.
   explorers (`index.html`, `word_frequency.html`, `talk_analyzer.html`).
 - **[Topical guide](#topical-guide)** — a local app (`topical-guide/`) for
   curating your own personal topical guide: search the scripture database,
-  approve or reject candidate verses, and study the result by topic.
+  approve or reject candidate verses, and study the result by topic. Two
+  Claude-backed helpers can draft a topic's name/description or a verse's
+  note for you to review and save.
 
 ## Scripture Database
 
@@ -122,7 +124,27 @@ python topical-guide/server.py       # binds to 127.0.0.1:8000
 Backend is FastAPI, frontend is a single vanilla-JS page (`static/index.html`)
 with hash routing — no build step, matching the repo's other static-HTML
 tools. There's no auth or deployment; it's meant to run locally on your own
-machine.
+machine. `pip install -r topical-guide/requirements.txt` now also pulls in
+`anthropic` and `python-dotenv` for the AI helpers below.
+
+### AI writing helpers
+
+Two small Claude-backed helpers draft the fields that are hardest to write
+well — you review and save, the AI never writes to the database:
+
+- **Fill a topic** — on the New Topic form, describe the topic in plain
+  language (e.g. "verses about praying when you don't feel like it") and
+  press **✦ Fill with AI** to draft a name and description.
+- **Fill a note** — on the Curate tab, press **✦** beside an approved verse's
+  note box to draft a note from the verse and topic context (or, with rough
+  words already typed, to sharpen them without changing the point). A
+  **Save note** button appears once a fill is ready — nothing is saved until
+  you press it.
+
+Both need `ANTHROPIC_API_KEY` in `topical-guide/.env` (gitignored), read
+server-side only — it's never sent to the browser. Without a key, the
+buttons show a plain "no API key" message and the rest of the app still
+works normally.
 
 ### What's committed vs. derived
 
@@ -136,6 +158,10 @@ machine.
   shows a readable diff of your curation over time. Also **committed**.
 - `scriptures/scriptures_fts.db` — same derived, gitignored full-text index
   described above. The server refuses to start without it.
+- `topical-guide/ai_log.db` and `topical-guide/.env` — gitignored. Call logs
+  (`ai_log.db`) are a debugging/cost record for the AI helpers above, not
+  curation data, so they stay out of `guide.db` and never appear in
+  `guide_export.json`; `.env` holds the API key and must never be committed.
 
 ### Search
 

@@ -199,6 +199,36 @@ Verify each of these by actually doing it:
 - Keep code style consistent with existing scripts (`build_fts_db.py`):
   plain Python, docstrings explaining the why, no heavy dependencies.
 
+## AI writing helpers (round 1 — shipped)
+
+Two Claude-backed drafting helpers, added after Phase 1: **fill a topic's
+name/description** from a plain-language prompt, and **fill a topic–verse
+note** from the verse text and topic context (optionally sharpening the
+curator's own rough words). Full design lives in `AI-HELPERS-SPEC.md`.
+
+- **Haiku 4.5 to start** (`claude-haiku-4-5`), a per-feature tuning knob in
+  `ai.py`'s `FEATURES` registry — cheap to swap or tune per helper later.
+- **One shared house style constant** (`_HOUSE_STYLE` in `ai.py`) steers every
+  AI helper's prose, now and later: plain language, faithful to what the user
+  typed, Hemingway rather than devotional register.
+- **Call logs live in their own gitignored database**, `topical-guide/ai_log.db`
+  — never `guide.db`. `guide.db` is the committed hand-made artifact; AI call
+  logs must not bloat it or its export.
+- **Fill, then review, then save.** Both endpoints
+  (`POST /api/ai/topics/fill`, `POST /api/ai/topics/{id}/verses/{verse_id}/note/fill`)
+  return unsaved values only. Nothing reaches `guide.db` until the existing
+  `POST /api/topics` or `PATCH .../verses/{verse_id}` endpoints are called —
+  the AI never writes, and a fill never triggers `write_export`.
+- **Local-only, key in server env.** `ANTHROPIC_API_KEY` lives in
+  `topical-guide/.env` (gitignored), read server-side only, never sent to the
+  browser.
+
+This round deliberately shipped only these two writing helpers — no verse
+suggestion, no polish-existing-description, no topic edit form. Phase 4's
+"LLM-assisted candidate suggestion" (below) is still ahead; it will build on
+these same prompt-constant and logging conventions once semantic search
+(Phase 3) exists to seed it.
+
 ## Later phases (do NOT build now — context only)
 
 - **Phase 2 — review-loop polish:** saved searches per topic, provenance

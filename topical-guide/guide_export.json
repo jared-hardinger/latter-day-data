@@ -1,5 +1,10 @@
 [
   {
+    "name": "Jesus Christ",
+    "description": "The nature and attributes of Jesus Christ, including his identity, character, and divine qualities. Verses that describe who he is, what he does, and his relationship to God the Father and humanity. Not Prayer, which focuses on the act of communicating with God.",
+    "verses": []
+  },
+  {
     "name": "Prayer",
     "description": "The act of praying, communicating with God, our Heavenly Father.",
     "verses": [
@@ -20,6 +25,12 @@
         "status": "approved",
         "source": "prefix",
         "note": ""
+      },
+      {
+        "reference": "Alma 37:37",
+        "status": "approved",
+        "source": "phrase",
+        "note": "Counseling with the Lord means praying to him. Prayer is how we bring our concerns and choices to God for his direction."
       },
       {
         "reference": "3 Nephi 19:32",

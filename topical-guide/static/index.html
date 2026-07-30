@@ -206,14 +206,19 @@ button.btn-reject:hover { background: #4e1a1a; border-color: #d94a4a; }
 }
 .badge-approved { color: #4ad98a; border: 1px solid #2a9e5a; }
 .badge-rejected { color: #d94a4a; border: 1px solid #9e2a2a; }
-.note-row { width: 100%; margin-top: 0.3rem; }
-.note-row input { width: 100%; }
+.note-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; width: 100%; margin-top: 0.3rem; }
+.note-row input { flex: 1; min-width: 150px; }
 .desc-edit {
   color: #999;
   font-size: 0.92rem;
   margin-bottom: 1.5rem;
   line-height: 1.5;
 }
+.ai-fill { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.ai-fill input[type="text"] { flex: 1; min-width: 200px; }
+.ai-note { color: #999; font-size: 0.85rem; margin-top: 0.3rem; }
+.ai-warn { color: #d9a44a; font-size: 0.88rem; margin-top: 0.3rem; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -293,9 +298,16 @@ async function renderHome(app) {
     <h1>Topical Guide</h1>
     <p class="subtitle">A personal, curated guide to the scriptures — search, approve, and study by topic.</p>
     <div class="card">
+      <div class="ai-fill">
+        <input type="text" id="fill-topic-prompt" placeholder="Describe the topic… e.g. verses about praying when you don't feel like it">
+        <button type="button" id="fill-topic-btn">&#10022; Fill with AI</button>
+      </div>
+      <div class="error-msg" id="fill-topic-error"></div>
+      <div class="ai-note" id="fill-topic-reason"></div>
+      <div class="ai-warn" id="fill-topic-duplicate"></div>
       <form class="inline-form" id="new-topic-form">
         <input type="text" id="new-topic-name" placeholder="New topic name (e.g. Prayer)" required>
-        <input type="text" id="new-topic-desc" placeholder="Description (optional)">
+        <textarea id="new-topic-desc" rows="3" maxlength="400" placeholder="Description (optional)"></textarea>
         <div>
           <button type="submit" class="primary">Add Topic</button>
         </div>
@@ -332,6 +344,34 @@ async function renderHome(app) {
       location.hash = `#/topic/${topic.id}`;
     } catch (err) {
       errBox.textContent = err.message;
+    }
+  });
+
+  document.getElementById("fill-topic-btn").addEventListener("click", async () => {
+    const btn = document.getElementById("fill-topic-btn");
+    const promptInput = document.getElementById("fill-topic-prompt");
+    const errBox = document.getElementById("fill-topic-error");
+    const reasonBox = document.getElementById("fill-topic-reason");
+    const dupBox = document.getElementById("fill-topic-duplicate");
+    errBox.textContent = "";
+    reasonBox.textContent = "";
+    dupBox.textContent = "";
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Filling…";
+    try {
+      const result = await api("/ai/topics/fill", "POST", { prompt: promptInput.value.trim() });
+      document.getElementById("new-topic-name").value = result.name;
+      document.getElementById("new-topic-desc").value = result.description;
+      reasonBox.textContent = result.reason;
+      if (result.duplicate_of) {
+        dupBox.textContent = `Looks like your existing "${result.duplicate_of}". Add it anyway, or cancel.`;
+      }
+    } catch (err) {
+      errBox.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalLabel;
     }
   });
 }
@@ -470,7 +510,25 @@ function renderResults(content, topicId) {
 
   resultsEl.querySelectorAll(".note-input").forEach(input => {
     const verseId = Number(input.dataset.verseId);
-    input.addEventListener("change", () => saveNote(topicId, verseId, input.value));
+    input.addEventListener("change", () => {
+      saveNote(topicId, verseId, input.value);
+      const saveBtn = resultsEl.querySelector(`.note-save-btn[data-verse-id="${verseId}"]`);
+      if (saveBtn) saveBtn.style.display = "none";
+    });
+  });
+
+  resultsEl.querySelectorAll(".note-fill-btn").forEach(btn => {
+    const verseId = Number(btn.dataset.verseId);
+    btn.addEventListener("click", () => fillNote(topicId, verseId, btn));
+  });
+
+  resultsEl.querySelectorAll(".note-save-btn").forEach(btn => {
+    const verseId = Number(btn.dataset.verseId);
+    btn.addEventListener("click", async () => {
+      const input = resultsEl.querySelector(`.note-input[data-verse-id="${verseId}"]`);
+      await saveNote(topicId, verseId, input.value);
+      btn.style.display = "none";
+    });
   });
 }
 
@@ -482,7 +540,10 @@ function renderResultRow(r) {
       <button class="link-btn" data-action="undo" data-verse-id="${r.verse_id}">Undo</button>
       <div class="note-row">
         <input type="text" class="note-input" data-verse-id="${r.verse_id}" placeholder="Add a note…" value="${escapeHtml(r.note || "")}">
+        <button type="button" class="note-fill-btn" data-verse-id="${r.verse_id}" title="Fill with AI">&#10022;</button>
+        <button type="button" class="note-save-btn primary" data-verse-id="${r.verse_id}" style="display:none;">Save note</button>
       </div>
+      <div class="error-msg note-fill-error" data-verse-id="${r.verse_id}"></div>
     `;
   } else if (r.status_in_topic === "rejected") {
     statusHtml = `
@@ -532,6 +593,26 @@ async function saveNote(topicId, verseId, note) {
   const updated = await api(`/topics/${topicId}/verses/${verseId}`, "PATCH", { note });
   const r = findResult(verseId);
   if (r) r.note = updated.note;
+}
+
+async function fillNote(topicId, verseId, btn) {
+  const input = document.querySelector(`.note-input[data-verse-id="${verseId}"]`);
+  const saveBtn = document.querySelector(`.note-save-btn[data-verse-id="${verseId}"]`);
+  const errBox = document.querySelector(`.note-fill-error[data-verse-id="${verseId}"]`);
+  if (errBox) errBox.textContent = "";
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    const result = await api(`/ai/topics/${topicId}/verses/${verseId}/note/fill`, "POST", { prompt: input.value.trim() });
+    input.value = result.note;
+    if (saveBtn) saveBtn.style.display = "inline-block";
+  } catch (err) {
+    if (errBox) errBox.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
 }
 </script>
 </body>
