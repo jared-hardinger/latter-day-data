@@ -219,6 +219,24 @@ button.btn-reject:hover { background: #4e1a1a; border-color: #d94a4a; }
 .ai-note { color: #999; font-size: 0.85rem; margin-top: 0.3rem; }
 .ai-warn { color: #d9a44a; font-size: 0.88rem; margin-top: 0.3rem; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
+.header-actions { display: flex; align-items: baseline; gap: 0.8rem; }
+.edit-form { display: flex; flex-direction: column; gap: 0.6rem; margin-bottom: 1.5rem; }
+.edit-actions { display: flex; align-items: center; gap: 0.6rem; }
+.edit-actions .spacer { flex: 1; }
+button.btn-danger { border-color: #9e2a2a; color: #d94a4a; }
+button.btn-danger:hover { background: #4e1a1a; border-color: #d94a4a; color: #fff; }
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(10, 14, 26, 0.75);
+  display: flex; align-items: center; justify-content: center; padding: 1rem; z-index: 10;
+}
+.modal {
+  background: #16213e; border: 1px solid #2a3a5e; border-radius: 10px;
+  padding: 1.5rem; max-width: 460px; width: 100%;
+}
+.modal h2 { font-size: 1.15rem; color: #fff; margin-bottom: 0.8rem; }
+.modal p { color: #ccc; line-height: 1.5; margin-bottom: 0.8rem; font-size: 0.92rem; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.2rem; }
+.note-actions { margin-top: 0.4rem; }
 </style>
 </head>
 <body>
@@ -287,6 +305,20 @@ async function render() {
 
 window.addEventListener("hashchange", render);
 window.addEventListener("DOMContentLoaded", render);
+
+// Escape closes the delete modal if one is open, otherwise cancels topic
+// edit mode if that's active. One listener, added once; editModeActive and
+// cancelEditFn are updated by whichever render function is currently live.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (document.querySelector(".modal-backdrop")) {
+    closeDeleteModal();
+    return;
+  }
+  if (editModeActive && cancelEditFn) {
+    cancelEditFn();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Home view
@@ -381,6 +413,8 @@ async function renderHome(app) {
 // ---------------------------------------------------------------------------
 
 let curateState = null; // { topicId, mode, results, total, query }
+let editModeActive = false;
+let cancelEditFn = null;
 
 async function renderTopicPage(app, topicId, activeTab) {
   activeTab = activeTab || "study";
@@ -388,14 +422,15 @@ async function renderTopicPage(app, topicId, activeTab) {
 
   app.innerHTML = `
     <a class="back-link" href="#/">&larr; All topics</a>
-    <h1>${escapeHtml(topic.name)}</h1>
-    ${topic.description ? `<p class="desc-edit">${escapeHtml(topic.description)}</p>` : ""}
+    <div id="topic-header"></div>
     <div class="tabs">
       <button class="tab-btn" data-tab="study">Study</button>
       <button class="tab-btn" data-tab="curate">Curate</button>
     </div>
     <div id="tab-content"></div>
   `;
+
+  renderTopicHeaderView(topic);
 
   const tabButtons = app.querySelectorAll(".tab-btn");
   tabButtons.forEach(btn => {
@@ -413,6 +448,171 @@ async function renderTopicPage(app, topicId, activeTab) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Topic header — view / edit mode. Rendering into #topic-header only (never
+// #tab-content) is what lets Edit/Cancel leave an in-progress Curate search
+// untouched.
+// ---------------------------------------------------------------------------
+
+function renderTopicHeaderView(topic) {
+  editModeActive = false;
+  cancelEditFn = null;
+  const header = document.getElementById("topic-header");
+  header.innerHTML = `
+    <div class="header-actions">
+      <h1>${escapeHtml(topic.name)}</h1>
+      <button class="link-btn" id="edit-topic-btn">Edit</button>
+    </div>
+    ${topic.description ? `<p class="desc-edit">${escapeHtml(topic.description)}</p>` : ""}
+  `;
+  document.getElementById("edit-topic-btn").addEventListener("click", () => {
+    renderTopicHeaderEdit(topic);
+  });
+}
+
+function renderTopicHeaderEdit(topic) {
+  editModeActive = true;
+  cancelEditFn = () => renderTopicHeaderView(topic);
+  const header = document.getElementById("topic-header");
+  header.innerHTML = `
+    <div class="edit-form">
+      <input type="text" id="edit-topic-name" value="${escapeHtml(topic.name)}" required>
+      <textarea id="edit-topic-desc" rows="3" maxlength="400">${escapeHtml(topic.description)}</textarea>
+      <div class="ai-fill">
+        <input type="text" id="polish-prompt" placeholder="Optional: how to change it…">
+        <button type="button" id="polish-btn">&#10022; Polish with AI</button>
+      </div>
+      <div class="ai-note" id="polish-reason"></div>
+      <div class="error-msg" id="edit-topic-error"></div>
+      <div class="edit-actions">
+        <button type="button" class="primary" id="save-topic-btn">Save changes</button>
+        <button type="button" id="cancel-topic-btn">Cancel</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn-danger" id="delete-topic-btn">Delete topic</button>
+      </div>
+    </div>
+  `;
+
+  const nameInput = document.getElementById("edit-topic-name");
+  const descInput = document.getElementById("edit-topic-desc");
+  const errBox = document.getElementById("edit-topic-error");
+
+  document.getElementById("cancel-topic-btn").addEventListener("click", () => cancelEditFn());
+
+  document.getElementById("save-topic-btn").addEventListener("click", async () => {
+    errBox.textContent = "";
+    const name = nameInput.value.trim();
+    if (!name) {
+      errBox.textContent = "A topic needs a name.";
+      return;
+    }
+    const description = descInput.value.trim();
+    try {
+      const updated = await api(`/topics/${topic.id}`, "PATCH", { name, description });
+      topic.name = updated.name;
+      topic.description = updated.description;
+      renderTopicHeaderView(topic);
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+
+  document.getElementById("polish-btn").addEventListener("click", async () => {
+    const btn = document.getElementById("polish-btn");
+    const promptInput = document.getElementById("polish-prompt");
+    const reasonBox = document.getElementById("polish-reason");
+    errBox.textContent = "";
+    reasonBox.textContent = "";
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Polishing…";
+    try {
+      const result = await api(`/ai/topics/${topic.id}/description/polish`, "POST", {
+        prompt: promptInput.value.trim(),
+      });
+      descInput.value = result.description;
+      if (result.suggested_name) {
+        nameInput.value = result.suggested_name;
+      }
+      reasonBox.textContent = result.reason;
+    } catch (err) {
+      errBox.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+    }
+  });
+
+  document.getElementById("delete-topic-btn").addEventListener("click", (e) => {
+    openDeleteModal(topic, e.currentTarget);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Delete modal
+// ---------------------------------------------------------------------------
+
+function joinWithAnd(items) {
+  if (items.length === 1) return items[0];
+  return items.slice(0, -1).join(", ") + " and " + items[items.length - 1];
+}
+
+function pluralize(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function openDeleteModal(topic, triggerBtn) {
+  const counts = [];
+  if (topic.verses.length > 0) counts.push(pluralize(topic.verses.length, "approved verse"));
+  if (topic.rejected_count > 0) counts.push(pluralize(topic.rejected_count, "rejection"));
+  if (topic.note_count > 0) counts.push(pluralize(topic.note_count, "note"));
+
+  const countsSentence = counts.length === 0
+    ? "This topic has no verses yet."
+    : `This also deletes ${joinWithAnd(counts)}.`;
+
+  const modal = el(`
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true">
+        <h2>Delete "${escapeHtml(topic.name)}"?</h2>
+        <p>${countsSentence}</p>
+        <p>This cannot be undone from the app. The only way back is git history for guide_export.json.</p>
+        <div class="error-msg" id="delete-modal-error"></div>
+        <div class="modal-actions">
+          <button type="button" id="delete-modal-cancel">Cancel</button>
+          <button type="button" class="btn-danger" id="delete-modal-confirm">Delete topic</button>
+        </div>
+      </div>
+    </div>
+  `);
+  modal._triggerBtn = triggerBtn;
+  document.body.appendChild(modal);
+
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeDeleteModal();
+  });
+  document.getElementById("delete-modal-cancel").addEventListener("click", () => closeDeleteModal());
+  document.getElementById("delete-modal-confirm").addEventListener("click", async () => {
+    const errBox = document.getElementById("delete-modal-error");
+    try {
+      await api(`/topics/${topic.id}`, "DELETE");
+      location.hash = "#/";
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  });
+
+  document.getElementById("delete-modal-cancel").focus();
+}
+
+function closeDeleteModal() {
+  const modal = document.querySelector(".modal-backdrop");
+  if (!modal) return;
+  const triggerBtn = modal._triggerBtn;
+  modal.remove();
+  if (triggerBtn) triggerBtn.focus();
+}
+
 function renderStudyTab(content, topic) {
   if (topic.verses.length === 0) {
     content.innerHTML = `<p class="empty-state">No approved verses yet. Switch to the Curate tab to search and approve some.</p>`;
@@ -422,9 +622,62 @@ function renderStudyTab(content, topic) {
     <div class="verse-block">
       <div class="verse-ref">${escapeHtml(v.reference)}</div>
       <div class="verse-text">${escapeHtml(v.text)}</div>
-      ${v.note ? `<div class="verse-note">${escapeHtml(v.note)}</div>` : ""}
+      <div class="note-area" data-verse-id="${v.verse_id}">${studyNoteDisplayHtml(v)}</div>
     </div>
   `).join("");
+
+  content.querySelectorAll(".note-area").forEach(area => {
+    const verseId = Number(area.dataset.verseId);
+    wireStudyNoteToggle(area, topic, verseId);
+  });
+}
+
+function studyNoteDisplayHtml(v) {
+  return `
+    ${v.note ? `<div class="verse-note">${escapeHtml(v.note)}</div>` : ""}
+    <div class="note-actions">
+      <button type="button" class="link-btn note-toggle-btn">${v.note ? "Edit note" : "Add note"}</button>
+    </div>
+  `;
+}
+
+function wireStudyNoteToggle(area, topic, verseId) {
+  area.querySelector(".note-toggle-btn").addEventListener("click", () => {
+    openStudyNoteEditor(area, topic, verseId);
+  });
+}
+
+function openStudyNoteEditor(area, topic, verseId) {
+  const verse = topic.verses.find(v => v.verse_id === verseId);
+  area.innerHTML = noteRowHtml(verseId, verse.note);
+
+  const row = area.querySelector(".note-row");
+  const cancelBtn = el(`<button type="button" class="link-btn note-cancel-btn">Cancel</button>`);
+  row.appendChild(cancelBtn);
+
+  const exitToView = () => {
+    area.innerHTML = studyNoteDisplayHtml(verse);
+    wireStudyNoteToggle(area, topic, verseId);
+  };
+
+  // A plain click on Cancel blurs the note input first (default browser
+  // behavior for a focus change), which would fire the input's save-on-blur
+  // handler before this button's own click handler runs — silently saving
+  // instead of discarding. Preventing the default on mousedown stops the
+  // focus shift (and so the blur) without affecting the click that follows.
+  cancelBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  cancelBtn.addEventListener("click", exitToView);
+  area.addEventListener("keydown", function onKey(e) {
+    if (e.key === "Escape") {
+      area.removeEventListener("keydown", onKey);
+      exitToView();
+    }
+  });
+
+  wireNoteRow(area, topic.id, (newNote) => {
+    verse.note = newNote;
+    exitToView();
+  });
 }
 
 const MODE_LABELS = {
@@ -508,26 +761,11 @@ function renderResults(content, topicId) {
     }
   });
 
-  resultsEl.querySelectorAll(".note-input").forEach(input => {
-    const verseId = Number(input.dataset.verseId);
-    input.addEventListener("change", () => {
-      saveNote(topicId, verseId, input.value);
-      const saveBtn = resultsEl.querySelector(`.note-save-btn[data-verse-id="${verseId}"]`);
-      if (saveBtn) saveBtn.style.display = "none";
-    });
-  });
-
-  resultsEl.querySelectorAll(".note-fill-btn").forEach(btn => {
-    const verseId = Number(btn.dataset.verseId);
-    btn.addEventListener("click", () => fillNote(topicId, verseId, btn));
-  });
-
-  resultsEl.querySelectorAll(".note-save-btn").forEach(btn => {
-    const verseId = Number(btn.dataset.verseId);
-    btn.addEventListener("click", async () => {
-      const input = resultsEl.querySelector(`.note-input[data-verse-id="${verseId}"]`);
-      await saveNote(topicId, verseId, input.value);
-      btn.style.display = "none";
+  resultsEl.querySelectorAll(".note-row-wrap").forEach(root => {
+    const verseId = Number(root.querySelector(".note-input").dataset.verseId);
+    wireNoteRow(root, topicId, (newNote) => {
+      const r = findResult(verseId);
+      if (r) r.note = newNote;
     });
   });
 }
@@ -538,12 +776,7 @@ function renderResultRow(r) {
     statusHtml = `
       <span class="badge badge-approved">Approved</span>
       <button class="link-btn" data-action="undo" data-verse-id="${r.verse_id}">Undo</button>
-      <div class="note-row">
-        <input type="text" class="note-input" data-verse-id="${r.verse_id}" placeholder="Add a note…" value="${escapeHtml(r.note || "")}">
-        <button type="button" class="note-fill-btn" data-verse-id="${r.verse_id}" title="Fill with AI">&#10022;</button>
-        <button type="button" class="note-save-btn primary" data-verse-id="${r.verse_id}" style="display:none;">Save note</button>
-      </div>
-      <div class="error-msg note-fill-error" data-verse-id="${r.verse_id}"></div>
+      ${noteRowHtml(r.verse_id, r.note)}
     `;
   } else if (r.status_in_topic === "rejected") {
     statusHtml = `
@@ -590,29 +823,75 @@ async function undoVerse(topicId, verseId) {
 }
 
 async function saveNote(topicId, verseId, note) {
-  const updated = await api(`/topics/${topicId}/verses/${verseId}`, "PATCH", { note });
-  const r = findResult(verseId);
-  if (r) r.note = updated.note;
+  return api(`/topics/${topicId}/verses/${verseId}`, "PATCH", { note });
 }
 
-async function fillNote(topicId, verseId, btn) {
-  const input = document.querySelector(`.note-input[data-verse-id="${verseId}"]`);
-  const saveBtn = document.querySelector(`.note-save-btn[data-verse-id="${verseId}"]`);
-  const errBox = document.querySelector(`.note-fill-error[data-verse-id="${verseId}"]`);
-  if (errBox) errBox.textContent = "";
-  const originalLabel = btn.textContent;
+// ---------------------------------------------------------------------------
+// Shared, editable note row — used by the Curate tab's result list and the
+// Study tab's per-verse editor. `root` is the wrapper containing exactly one
+// row; wireNoteRow reads the verse id off the row's own input rather than
+// requiring the caller to track it separately.
+// ---------------------------------------------------------------------------
+
+function noteRowHtml(verseId, note) {
+  return `
+    <div class="note-row-wrap">
+      <div class="note-row">
+        <input type="text" class="note-input" data-verse-id="${verseId}" placeholder="Add a note…" value="${escapeHtml(note || "")}">
+        <button type="button" class="note-fill-btn" data-verse-id="${verseId}" title="Fill with AI">&#10022;</button>
+        <button type="button" class="note-save-btn primary" data-verse-id="${verseId}">Save note</button>
+      </div>
+      <div class="error-msg note-fill-error"></div>
+    </div>
+  `;
+}
+
+function flashSaved(btn) {
+  const original = btn.textContent;
+  btn.textContent = "Saved";
   btn.disabled = true;
-  btn.textContent = "…";
-  try {
-    const result = await api(`/ai/topics/${topicId}/verses/${verseId}/note/fill`, "POST", { prompt: input.value.trim() });
-    input.value = result.note;
-    if (saveBtn) saveBtn.style.display = "inline-block";
-  } catch (err) {
-    if (errBox) errBox.textContent = err.message;
-  } finally {
+  setTimeout(() => {
+    btn.textContent = original;
     btn.disabled = false;
-    btn.textContent = originalLabel;
-  }
+  }, 1500);
+}
+
+function wireNoteRow(root, topicId, onSaved) {
+  const input = root.querySelector(".note-input");
+  const verseId = Number(input.dataset.verseId);
+  const fillBtn = root.querySelector(".note-fill-btn");
+  const saveBtn = root.querySelector(".note-save-btn");
+  const errBox = root.querySelector(".note-fill-error");
+
+  const doSave = async () => {
+    errBox.textContent = "";
+    try {
+      const updated = await saveNote(topicId, verseId, input.value);
+      flashSaved(saveBtn);
+      if (onSaved) onSaved(updated.note);
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  };
+
+  input.addEventListener("change", doSave);
+  saveBtn.addEventListener("click", doSave);
+
+  fillBtn.addEventListener("click", async () => {
+    errBox.textContent = "";
+    const originalLabel = fillBtn.textContent;
+    fillBtn.disabled = true;
+    fillBtn.textContent = "…";
+    try {
+      const result = await api(`/ai/topics/${topicId}/verses/${verseId}/note/fill`, "POST", { prompt: input.value.trim() });
+      input.value = result.note;
+    } catch (err) {
+      errBox.textContent = err.message;
+    } finally {
+      fillBtn.disabled = false;
+      fillBtn.textContent = originalLabel;
+    }
+  });
 }
 </script>
 </body>

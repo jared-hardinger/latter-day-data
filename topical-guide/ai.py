@@ -234,6 +234,8 @@ _HOUSE_STYLE = (
 # fill_topic prompt constants
 # ---------------------------------------------------------------------------
 
+# Shared with polish_description below — how a topic description should read
+# does not depend on whether it was drafted or revised.
 _TOPIC_DESCRIPTION_CONVENTION = (
     "How to write the description. A person reads it on the topic list, and a "
     "later machine step will read it to decide whether a verse belongs here — so "
@@ -303,6 +305,50 @@ _NOTE_RUBRIC = (
 )
 
 # ---------------------------------------------------------------------------
+# polish_description prompt constants — the convention is shared with
+# fill_topic; only the framing and the rules differ.
+# ---------------------------------------------------------------------------
+
+_POLISH_INSTRUCTIONS = (
+    "You sharpen the description of one topic that already exists in a personal "
+    "topical guide to the scriptures. You are given the topic's name, its current "
+    "description, the verses the curator has already approved into it, and the "
+    "other topics in the guide. Rewrite the description so it matches the "
+    "convention below.\n"
+    "The approved verses are the evidence of what this topic has actually become. "
+    "Where the current description and the verses disagree, follow the verses — "
+    "but describe only what is there. Do not widen the topic to cover verses the "
+    "curator has not approved.\n"
+    "When the curator supplied words steering the rewrite, follow them.\n"
+    "Occasionally the approved verses show a topic has drifted from its name — it "
+    "was named for one thing and has grown into another. When that happens, you "
+    "may also suggest a replacement name. This is rare: most of the time the "
+    "current name still fits and you should leave it alone."
+)
+
+_POLISH_RUBRIC = (
+    "Rules:\n"
+    "- You are primarily writing one field: the description. Only set "
+    "suggested_name when the current name is actually a poor fit for what the "
+    "approved verses show this topic has become — not merely improvable. Most "
+    "polishes leave it null.\n"
+    "- When you do set suggested_name: short, Title Case, two or three words at "
+    "most, matching the breadth and style of the other topics in the guide — same "
+    "rule as naming a brand-new topic.\n"
+    "- This is a revision, not a fresh draft. Keep what the current description "
+    "already gets right. If it is already correct and in convention, return it "
+    "unchanged and say so in reason.\n"
+    "- The boundary clause names a real topic from the list you were given, "
+    "spelled exactly as it appears there. If no existing topic is near enough to "
+    "be confused with this one, leave the boundary clause off rather than "
+    "inventing a topic.\n"
+    "- The notes on the approved verses are the curator's own reasoning. Use them "
+    "to find the link this topic actually holds.\n"
+    "- reason: one line saying what you changed and why, in the same plain voice — "
+    "covering a renamed suggestion too, when you make one."
+)
+
+# ---------------------------------------------------------------------------
 # Output models — the model's raw output, coerced before it leaves the endpoint
 # ---------------------------------------------------------------------------
 
@@ -317,6 +363,12 @@ class _TopicFill(BaseModel):
 class _NoteFill(BaseModel):
     note: str
     reason: str
+
+
+class _DescriptionPolish(BaseModel):
+    description: str
+    reason: str
+    suggested_name: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +415,15 @@ FEATURES: dict = {
         convention=_NOTE_CONVENTION,
         rubric=_NOTE_RUBRIC,
     ),
+    "polish_description": AiFeature(
+        name="polish_description",
+        model="claude-haiku-4-5",
+        max_tokens=2048,
+        max_prompt_chars=1000,  # steering words, not a draft
+        instructions=_POLISH_INSTRUCTIONS,
+        convention=_TOPIC_DESCRIPTION_CONVENTION,
+        rubric=_POLISH_RUBRIC,
+    ),
 }
 
 
@@ -374,7 +435,9 @@ FEATURES: dict = {
 #
 # 1. Add three prompt constants (_X_INSTRUCTIONS, _X_CONVENTION, _X_RUBRIC)
 #    next to the others in this file. Reuse _HOUSE_STYLE — do not restate
-#    voice rules in your rubric.
+#    voice rules in your rubric. A convention constant can be reused as-is
+#    across features when the same convention applies to both (see how
+#    polish_description shares _TOPIC_DESCRIPTION_CONVENTION with fill_topic).
 # 2. Add an output model (class _XFill(BaseModel)).
 # 3. Add one FEATURES["fill_x"] = AiFeature(...) entry with the model and caps.
 # 4. Add a thin endpoint in server.py: validate the prompt against

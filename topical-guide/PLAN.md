@@ -224,10 +224,37 @@ curator's own rough words). Full design lives in `AI-HELPERS-SPEC.md`.
   browser.
 
 This round deliberately shipped only these two writing helpers — no verse
-suggestion, no polish-existing-description, no topic edit form. Phase 4's
-"LLM-assisted candidate suggestion" (below) is still ahead; it will build on
-these same prompt-constant and logging conventions once semantic search
-(Phase 3) exists to seed it.
+suggestion, no polish-existing-description, ~~no topic edit form~~
+*(superseded — see below)*. Phase 4's "LLM-assisted candidate suggestion"
+(below) is still ahead; it will build on these same prompt-constant and
+logging conventions once semantic search (Phase 3) exists to seed it.
+
+## Topic editing (round 2 — shipped)
+
+Topics can now be renamed, re-described, and deleted from their own page
+(`#/topic/{id}`), and a verse's note is editable from the Study tab as well
+as Curate. Full design lives in `TOPIC-EDIT-SPEC.md`.
+
+- **Edit and delete live on the topic page only.** An `Edit` button swaps the
+  header into a form (name, description, `Delete topic`); the home list stays
+  a read-only browse view.
+- **A third AI helper, `polish_description`**, rewrites a topic's description
+  from its approved verses (with their notes) and the other topic names —
+  the round-1 `fill_topic` helper drafts from a prompt and knows nothing
+  about what the topic has since become. It can also suggest a replacement
+  *name*, but only when the approved verses show the current name is a poor
+  fit; that suggestion, like the description, is unsaved until **Save
+  changes** is pressed.
+- **Delete is a hard delete**, behind a custom in-page confirmation modal
+  that names the topic and the counts it destroys (approved verses,
+  rejections, notes). No `window.confirm`, no archive, no trash — git history
+  of `guide_export.json` is the only way back, and the modal says so.
+  `ON DELETE CASCADE` removes the `topic_verses` links.
+- **The AI never writes**, same hard rule as round 1: `polish_description`
+  returns unsaved values only, and never triggers `write_export`.
+- **No schema change.** Both endpoints (`PATCH`/`DELETE /api/topics/{id}`)
+  existed since Phase 1; this round is the first thing to call them from the
+  UI, and the first to test them.
 
 ## Later phases (do NOT build now — context only)
 

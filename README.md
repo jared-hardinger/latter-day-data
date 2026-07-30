@@ -127,21 +127,42 @@ tools. There's no auth or deployment; it's meant to run locally on your own
 machine. `pip install -r topical-guide/requirements.txt` now also pulls in
 `anthropic` and `python-dotenv` for the AI helpers below.
 
+### Editing and deleting topics
+
+A topic's name and description are editable from its own page: click **Edit**
+beside the title to swap the header into a form, edit either field, and
+press **Save changes**. Editing and deleting live only on the topic page —
+the home list stays a clean, read-only browse view. **Delete topic** sits in
+that same form, behind a confirmation modal that names the topic and exactly
+what it destroys (approved verses, rejections, notes). Deletion is
+**permanent** — there's no archive or trash, and no `window.confirm`; the
+modal spells out that git history of `guide_export.json` is the only way
+back. `topic_verses` rows cascade automatically.
+
+A verse's note can also be edited straight from the Study tab now (an
+**Add note** / **Edit note** link under each verse), not just from a Curate
+search — the same note row, AI fill included, is shared between both tabs.
+
 ### AI writing helpers
 
-Two small Claude-backed helpers draft the fields that are hardest to write
+Three small Claude-backed helpers draft the fields that are hardest to write
 well — you review and save, the AI never writes to the database:
 
 - **Fill a topic** — on the New Topic form, describe the topic in plain
   language (e.g. "verses about praying when you don't feel like it") and
   press **✦ Fill with AI** to draft a name and description.
-- **Fill a note** — on the Curate tab, press **✦** beside an approved verse's
-  note box to draft a note from the verse and topic context (or, with rough
-  words already typed, to sharpen them without changing the point). A
-  **Save note** button appears once a fill is ready — nothing is saved until
-  you press it.
+- **Fill a note** — on the Curate tab (or now the Study tab), press **✦**
+  beside a verse's note box to draft a note from the verse and topic context
+  (or, with rough words already typed, to sharpen them without changing the
+  point). **Save note** persists it — nothing is saved until you press it.
+- **Polish a description** — on an existing topic's Edit form, press
+  **✦ Polish with AI** to rewrite the description against the topic's own
+  approved verses (and their notes), not just a prompt. It can occasionally
+  suggest a new name too, when the approved verses show the current one no
+  longer fits — both fields fill in for review, and nothing saves until you
+  press **Save changes**.
 
-Both need `ANTHROPIC_API_KEY` in `topical-guide/.env` (gitignored), read
+All three need `ANTHROPIC_API_KEY` in `topical-guide/.env` (gitignored), read
 server-side only — it's never sent to the browser. Without a key, the
 buttons show a plain "no API key" message and the rest of the app still
 works normally.

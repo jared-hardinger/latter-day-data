@@ -1,7 +1,7 @@
 [
   {
-    "name": "Jesus Christ",
-    "description": "The nature and attributes of Jesus Christ, including his identity, character, and divine qualities. Verses that describe who he is, what he does, and his relationship to God the Father and humanity. Not Prayer, which focuses on the act of communicating with God.",
+    "name": "Jesus Christ - Character",
+    "description": "The character and attributes of Jesus Christ. Verses that show who he is, what he values, etc.",
     "verses": []
   },
   {
@@ -36,7 +36,7 @@
         "reference": "3 Nephi 19:32",
         "status": "approved",
         "source": "prefix",
-        "note": "Example of Jesus praying"
+        "note": "Jesus prayed to the Father, and his words were so great they could not be captured in language or writing."
       },
       {
         "reference": "Doctrine and Covenants 31:12",

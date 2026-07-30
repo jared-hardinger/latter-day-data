@@ -287,6 +287,10 @@ def get_topic(
         "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND status = 'rejected'",
         (topic_id,),
     ).fetchone()[0]
+    note_count = guide_db.execute(
+        "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND note != ''",
+        (topic_id,),
+    ).fetchone()[0]
     verses = []
     for link in approved:
         row = fts_db.execute(
@@ -308,6 +312,7 @@ def get_topic(
         "description": topic["description"],
         "verses": verses,
         "rejected_count": rejected_count,
+        "note_count": note_count,
     }
 
 
@@ -633,6 +638,110 @@ def fill_note(
         raise HTTPException(502, ai.AI_SERVICE_ERROR)
 
     return {"note": note, "reason": parsed.reason}
+
+
+class DescriptionPolishRequest(BaseModel):
+    prompt: Optional[str] = None
+
+
+@app.post("/api/ai/topics/{topic_id}/description/polish")
+def polish_description(
+    topic_id: int,
+    body: DescriptionPolishRequest,
+    guide_db=Depends(get_guide_db),
+    fts_db=Depends(get_fts_db),
+):
+    feature = ai.FEATURES["polish_description"]
+
+    topic = guide_db.execute(
+        "SELECT id, name, description FROM topics WHERE id = ?", (topic_id,)
+    ).fetchone()
+    if topic is None:
+        raise HTTPException(404, "Topic not found")
+
+    prompt = (body.prompt or "").strip()
+    if len(prompt) > feature.max_prompt_chars:
+        raise HTTPException(422, "That's too long.")
+
+    other_topics = guide_db.execute(
+        "SELECT name, description FROM topics WHERE id != ? ORDER BY name",
+        (topic_id,),
+    ).fetchall()
+    if other_topics:
+        lines = [
+            f"- {t['name']}: {t['description'].strip() or '(no description)'}"
+            for t in other_topics
+        ]
+        other_block = "Other topics:\n" + "\n".join(lines)
+    else:
+        other_block = "Other topics: none — this is the only topic in the guide."
+
+    desc_line = topic["description"].strip() or "(no description yet)"
+    this_block = f"Topic name: {topic['name']}\nCurrent description: {desc_line}"
+
+    approved_count = guide_db.execute(
+        "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND status = 'approved'",
+        (topic_id,),
+    ).fetchone()[0]
+    links = guide_db.execute(
+        """SELECT verse_id, note FROM topic_verses
+           WHERE topic_id = ? AND status = 'approved' ORDER BY verse_id LIMIT 40""",
+        (topic_id,),
+    ).fetchall()
+    if links:
+        lines = []
+        for link in links:
+            row = fts_db.execute(
+                "SELECT book, chapter, verse, text FROM v_verses WHERE id = ?",
+                (link["verse_id"],),
+            ).fetchone()
+            ref = f"{row['book']} {row['chapter']}:{row['verse']}"
+            lines.append(f"{ref}  {row['text']}")
+            if link["note"]:
+                lines.append(f"  note: {link['note']}")
+        verses_block = (
+            f"Approved verses in this topic ({len(links)} of {approved_count}):\n"
+            + "\n".join(lines)
+        )
+        if approved_count > len(links):
+            verses_block += (
+                f"\n… and {approved_count - len(links)} more approved verses not shown."
+            )
+    else:
+        verses_block = "Approved verses in this topic: none yet."
+
+    if prompt:
+        user_text = "The curator's own words for how to change it:\n" + prompt
+    else:
+        user_text = "The curator supplied no words. Polish the description as it stands."
+
+    parsed, _call_id = ai.call_claude(
+        feature=feature.name,
+        model=feature.model,
+        prompt_hash=feature.prompt_hash(),
+        system_text=feature.system_text(other_block, this_block, verses_block),
+        user_text=user_text,
+        output_format=ai._DescriptionPolish,
+        max_tokens=feature.max_tokens,
+    )
+    if parsed is None:
+        raise HTTPException(502, ai.AI_SERVICE_ERROR)
+
+    description = parsed.description.strip()[:400]
+    if not description:
+        raise HTTPException(502, ai.AI_SERVICE_ERROR)
+
+    suggested_name = None
+    if parsed.suggested_name:
+        candidate = parsed.suggested_name.strip()
+        if candidate and candidate.casefold() != topic["name"].casefold():
+            suggested_name = candidate
+
+    return {
+        "description": description,
+        "reason": parsed.reason,
+        "suggested_name": suggested_name,
+    }
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

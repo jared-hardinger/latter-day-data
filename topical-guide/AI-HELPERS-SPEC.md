@@ -612,6 +612,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   editable is a separate change.
 - No topic **edit** form, and so no fill on one. `PATCH /api/topics/{id}` exists
   but the UI has never called it. Fill is for creating.
+  *(Shipped in round 2 — see `TOPIC-EDIT-SPEC.md` for the edit form and the
+  third helper, `polish_description`.)*
 - No streaming, no spinner beyond the button's `Filling…` label.
 
 ---

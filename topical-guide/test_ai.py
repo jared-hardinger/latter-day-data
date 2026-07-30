@@ -65,6 +65,17 @@ def _find_test_verse() -> sqlite3.Row:
     return row
 
 
+def _first_n_verse_ids(n: int) -> list:
+    conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT id FROM v_verses ORDER BY id LIMIT ?", (n,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return [r[0] for r in rows]
+
+
 def _neighbour_texts(verse_row: sqlite3.Row) -> list:
     conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
@@ -192,6 +203,14 @@ DEFAULT_TOPIC_FILL = ai._TopicFill(
 DEFAULT_NOTE_FILL = ai._NoteFill(
     note="This verse links faith to action, not belief alone.",
     reason="The verse pairs 'faith' with 'works' directly.",
+)
+
+DEFAULT_POLISH = ai._DescriptionPolish(
+    description=(
+        "Verses where someone prays under duress or against their own "
+        "reluctance. Not Prayer, which holds the general pattern of prayer."
+    ),
+    reason="Sharpened the boundary against Prayer using the approved verses.",
 )
 
 
@@ -482,3 +501,213 @@ def test_logging_failure_does_not_break_a_fill(client, monkeypatch):
     resp = client.post("/api/ai/topics/fill", json={"prompt": "reluctant prayer"})
     assert resp.status_code == 200
     assert resp.json()["name"] == "Reluctant Prayer"
+
+
+# ---------------------------------------------------------------------------
+# polish_description
+# ---------------------------------------------------------------------------
+
+
+def _polish(client, topic_id, prompt=None):
+    return client.post(
+        f"/api/ai/topics/{topic_id}/description/polish", json={"prompt": prompt}
+    )
+
+
+def test_polish_returns_unsaved_description_and_writes_nothing(client, paths, monkeypatch):
+    topic_id = create_topic(client, "Reluctant Prayer", "prayer when you don't want to")
+    verse_id = _TEST_VERSE["id"]
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={"verse_id": verse_id, "status": "approved", "source": "manual"},
+    )
+    before_count = topic_count(client)
+    with open(paths["export"]) as f:
+        export_before = f.read()
+
+    mock_anthropic_returning(monkeypatch, DEFAULT_POLISH)
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["description"] == DEFAULT_POLISH.description
+    assert body["reason"] == DEFAULT_POLISH.reason
+
+    assert topic_count(client) == before_count
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    assert topic["description"] == "prayer when you don't want to"
+    with open(paths["export"]) as f:
+        export_after = f.read()
+    assert export_after == export_before
+
+
+def test_polish_description_is_capped_at_400_chars(client, monkeypatch):
+    topic_id = create_topic(client, "Reluctant Prayer")
+    polish = ai._DescriptionPolish(description="x" * 600, reason="reason")
+    mock_anthropic_returning(monkeypatch, polish)
+
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 200
+    assert len(resp.json()["description"]) <= 400
+
+
+def test_polish_blank_description_returns_502(client, monkeypatch):
+    topic_id = create_topic(client, "Reluctant Prayer")
+    polish = ai._DescriptionPolish(description="   ", reason="reason")
+    mock_anthropic_returning(monkeypatch, polish)
+
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 502
+
+
+def test_polish_unknown_topic_returns_404_without_calling_sdk(client, monkeypatch):
+    mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_POLISH)
+    resp = _polish(client, 999999)
+    assert resp.status_code == 404
+    mock_client.messages.parse.assert_not_called()
+
+
+def test_polish_overlong_prompt_returns_422_without_calling_sdk(client, monkeypatch):
+    topic_id = create_topic(client, "Reluctant Prayer")
+    mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_POLISH)
+    max_chars = ai.FEATURES["polish_description"].max_prompt_chars
+    resp = _polish(client, topic_id, prompt="x" * (max_chars + 1))
+    assert resp.status_code == 422
+    mock_client.messages.parse.assert_not_called()
+
+
+def test_polish_context_reaches_the_model(client, monkeypatch):
+    topic_id = create_topic(client, "Reluctant Prayer", "prayer when you don't want to")
+    create_topic(client, "Adversity", "Enduring hard things.")
+    verse_id = _TEST_VERSE["id"]
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={
+            "verse_id": verse_id,
+            "status": "approved",
+            "source": "manual",
+            "note": "the counsel comes before the doing, not after it",
+        },
+    )
+    mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_POLISH)
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 200
+
+    system_text = mock_client.messages.parse.call_args.kwargs["system"][0]["text"]
+    assert "Reluctant Prayer" in system_text
+    assert "prayer when you don't want to" in system_text
+    ref = f"{_TEST_VERSE['book']} {_TEST_VERSE['chapter']}:{_TEST_VERSE['verse']}"
+    assert ref in system_text
+    assert "the counsel comes before the doing, not after it" in system_text
+    assert "Adversity" in system_text
+
+    blocks = system_text.split("\n\n")
+    other_block = next(b for b in blocks if b.startswith("Other topics"))
+    assert "Reluctant Prayer" not in other_block
+    assert "Adversity" in other_block
+
+
+def test_polish_caps_approved_verses_at_40(client, monkeypatch):
+    topic_id = create_topic(client, "Reluctant Prayer")
+    verse_ids = _first_n_verse_ids(45)
+    assert len(verse_ids) == 45
+    for vid in verse_ids:
+        client.post(
+            f"/api/topics/{topic_id}/verses",
+            json={"verse_id": vid, "status": "approved", "source": "manual"},
+        )
+
+    mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_POLISH)
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 200
+
+    system_text = mock_client.messages.parse.call_args.kwargs["system"][0]["text"]
+    assert "Approved verses in this topic (40 of 45):" in system_text
+    assert "5 more approved verses not shown" in system_text
+
+    conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        refs = [
+            f"{r['book']} {r['chapter']}:{r['verse']}"
+            for r in conn.execute(
+                f"SELECT book, chapter, verse FROM v_verses WHERE id IN "
+                f"({','.join('?' * len(verse_ids))}) ORDER BY id",
+                verse_ids,
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+    shown_count = sum(1 for ref in refs if ref in system_text)
+    assert shown_count == 40
+
+
+def test_polish_with_no_approved_verses_says_none_yet(client, monkeypatch):
+    topic_id = create_topic(client, "Reluctant Prayer")
+    mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_POLISH)
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 200
+
+    system_text = mock_client.messages.parse.call_args.kwargs["system"][0]["text"]
+    assert "Approved verses in this topic: none yet." in system_text
+
+
+def test_polish_call_is_logged_with_distinct_prompt_hash(client, paths, monkeypatch):
+    topic_id = create_topic(client, "Reluctant Prayer")
+    mock_anthropic_returning(monkeypatch, DEFAULT_TOPIC_FILL)
+    fill_resp = client.post(
+        "/api/ai/topics/fill", json={"prompt": "reluctant prayer"}
+    )
+    assert fill_resp.status_code == 200
+
+    mock_anthropic_returning(monkeypatch, DEFAULT_POLISH)
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 200
+
+    rows = all_log_rows(paths)
+    assert len(rows) == 2
+    fill_row = next(r for r in rows if r["feature"] == "fill_topic")
+    polish_row = next(r for r in rows if r["feature"] == "polish_description")
+    assert polish_row["model"] == "claude-haiku-4-5"
+    assert polish_row["prompt_hash"] != fill_row["prompt_hash"]
+
+
+def test_polish_suggested_name_reaches_response_when_different(client, monkeypatch):
+    topic_id = create_topic(client, "Prayer")
+    polish = ai._DescriptionPolish(
+        description=DEFAULT_POLISH.description,
+        reason=DEFAULT_POLISH.reason,
+        suggested_name="Reluctant Prayer",
+    )
+    mock_anthropic_returning(monkeypatch, polish)
+
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 200
+    assert resp.json()["suggested_name"] == "Reluctant Prayer"
+
+
+def test_polish_suggested_name_matching_current_name_is_nulled(client, monkeypatch):
+    topic_id = create_topic(client, "Prayer")
+    polish = ai._DescriptionPolish(
+        description=DEFAULT_POLISH.description,
+        reason=DEFAULT_POLISH.reason,
+        suggested_name="prayer",  # differs only in case from the current name
+    )
+    mock_anthropic_returning(monkeypatch, polish)
+
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 200
+    assert resp.json()["suggested_name"] is None
+
+
+def test_polish_blank_suggested_name_is_nulled(client, monkeypatch):
+    topic_id = create_topic(client, "Prayer")
+    polish = ai._DescriptionPolish(
+        description=DEFAULT_POLISH.description,
+        reason=DEFAULT_POLISH.reason,
+        suggested_name="   ",
+    )
+    mock_anthropic_returning(monkeypatch, polish)
+
+    resp = _polish(client, topic_id)
+    assert resp.status_code == 200
+    assert resp.json()["suggested_name"] is None
