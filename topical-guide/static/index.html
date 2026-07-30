@@ -236,7 +236,13 @@ button.btn-danger:hover { background: #4e1a1a; border-color: #d94a4a; color: #ff
 .modal h2 { font-size: 1.15rem; color: #fff; margin-bottom: 0.8rem; }
 .modal p { color: #ccc; line-height: 1.5; margin-bottom: 0.8rem; font-size: 0.92rem; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.2rem; }
-.note-actions { margin-top: 0.4rem; }
+.note-actions { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
+.removed-strip {
+  display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+  padding: 0.6rem 0.8rem; margin-bottom: 1.5rem;
+  background: #0f1626; border: 1px dashed #2a3a5e; border-radius: 6px;
+  color: #999; font-size: 0.9rem;
+}
 </style>
 </head>
 <body>
@@ -619,17 +625,21 @@ function renderStudyTab(content, topic) {
     return;
   }
   content.innerHTML = topic.verses.map(v => `
-    <div class="verse-block">
-      <div class="verse-ref">${escapeHtml(v.reference)}</div>
-      <div class="verse-text">${escapeHtml(v.text)}</div>
-      <div class="note-area" data-verse-id="${v.verse_id}">${studyNoteDisplayHtml(v)}</div>
-    </div>
+    <div class="verse-block" data-verse-id="${v.verse_id}">${studyVerseInnerHtml(v)}</div>
   `).join("");
 
   content.querySelectorAll(".note-area").forEach(area => {
     const verseId = Number(area.dataset.verseId);
-    wireStudyNoteToggle(area, topic, verseId);
+    wireStudyNoteArea(area, topic, verseId);
   });
+}
+
+function studyVerseInnerHtml(v) {
+  return `
+    <div class="verse-ref">${escapeHtml(v.reference)}</div>
+    <div class="verse-text">${escapeHtml(v.text)}</div>
+    <div class="note-area" data-verse-id="${v.verse_id}">${studyNoteDisplayHtml(v)}</div>
+  `;
 }
 
 function studyNoteDisplayHtml(v) {
@@ -637,14 +647,91 @@ function studyNoteDisplayHtml(v) {
     ${v.note ? `<div class="verse-note">${escapeHtml(v.note)}</div>` : ""}
     <div class="note-actions">
       <button type="button" class="link-btn note-toggle-btn">${v.note ? "Edit note" : "Add note"}</button>
+      <button type="button" class="link-btn verse-remove-btn">Remove</button>
     </div>
+    <div class="error-msg verse-error"></div>
   `;
 }
 
-function wireStudyNoteToggle(area, topic, verseId) {
+function wireStudyNoteArea(area, topic, verseId) {
   area.querySelector(".note-toggle-btn").addEventListener("click", () => {
     openStudyNoteEditor(area, topic, verseId);
   });
+  area.querySelector(".verse-remove-btn").addEventListener("click", (e) => {
+    removeStudyVerse(area.closest(".verse-block"), topic, verseId, e.currentTarget);
+  });
+}
+
+async function removeStudyVerse(block, topic, verseId, btn) {
+  const errBox = block.querySelector(".verse-error");
+  const verse = topic.verses.find(v => v.verse_id === verseId);
+  errBox.textContent = "";
+  btn.disabled = true;
+  try {
+    await api(`/topics/${topic.id}/verses/${verseId}`, "DELETE");
+  } catch (err) {
+    errBox.textContent = err.message;
+    btn.disabled = false;
+    return;
+  }
+  forgetVerseLocally(topic, verse);
+  renderStudyRemovedStrip(block, topic, verse);
+}
+
+function forgetVerseLocally(topic, verse) {
+  topic.verses = topic.verses.filter(v => v.verse_id !== verse.verse_id);
+  if (verse.note) topic.note_count -= 1;
+  patchCuratedStatus(verse.verse_id, null, "");
+}
+
+function renderStudyRemovedStrip(block, topic, verse) {
+  block.innerHTML = `
+    <div class="removed-strip" role="status">
+      <span>Removed ${escapeHtml(verse.reference)}.</span>
+      <button type="button" class="link-btn undo-remove-btn">Undo</button>
+      <span class="error-msg undo-error"></span>
+    </div>
+  `;
+  const undoBtn = block.querySelector(".undo-remove-btn");
+  undoBtn.focus();
+  undoBtn.addEventListener("click", () => undoStudyRemove(block, topic, verse, undoBtn));
+}
+
+async function undoStudyRemove(block, topic, verse, btn) {
+  const errBox = block.querySelector(".undo-error");
+  errBox.textContent = "";
+  btn.disabled = true;
+  try {
+    await api(`/topics/${topic.id}/verses`, "POST", {
+      verse_id: verse.verse_id,
+      status: "approved",
+      source: verse.source,
+      note: verse.note,
+    });
+  } catch (err) {
+    errBox.textContent = err.message;
+    btn.disabled = false;
+    return;
+  }
+  restoreVerseLocally(topic, verse);
+  block.innerHTML = studyVerseInnerHtml(verse);
+  wireStudyNoteArea(block.querySelector(".note-area"), topic, verse.verse_id);
+  block.querySelector(".verse-remove-btn").focus();
+}
+
+function restoreVerseLocally(topic, verse) {
+  const at = topic.verses.findIndex(v => v.verse_id > verse.verse_id);
+  topic.verses.splice(at === -1 ? topic.verses.length : at, 0, verse);
+  if (verse.note) topic.note_count += 1;
+  patchCuratedStatus(verse.verse_id, "approved", verse.note);
+}
+
+function patchCuratedStatus(verseId, status, note) {
+  if (!curateState) return;
+  const r = curateState.results.find(x => x.verse_id === verseId);
+  if (!r) return;
+  r.status_in_topic = status;
+  r.note = note;
 }
 
 function openStudyNoteEditor(area, topic, verseId) {
@@ -657,7 +744,7 @@ function openStudyNoteEditor(area, topic, verseId) {
 
   const exitToView = () => {
     area.innerHTML = studyNoteDisplayHtml(verse);
-    wireStudyNoteToggle(area, topic, verseId);
+    wireStudyNoteArea(area, topic, verseId);
   };
 
   // A plain click on Cancel blurs the note input first (default browser

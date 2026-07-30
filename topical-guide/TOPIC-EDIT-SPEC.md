@@ -526,9 +526,8 @@ Verify each by actually doing it:
 - **No rejected-verse management.** The Study tab still shows only a
   `rejected_count`; there is no list of rejections and no un-reject outside a
   Curate search. Worth its own round.
-- **No remove/reject control on approved verses in the Study tab.** Dropping a
-  verse still means going back to Curate. Deliberate: Study is the reading view,
-  and this round already adds one editing surface to it.
+- ~~No remove/reject control on approved verses in the Study tab.~~ — shipped
+  as a `Remove` control (no `Reject`) in round 3; see `VERSE-REMOVE-SPEC.md`.
 - **No edit or delete controls on the home list.**
 - **No bulk operations** — no multi-select, no delete-all-rejections.
 - **No merge or split of topics.** Moving verses between topics is a Phase 4

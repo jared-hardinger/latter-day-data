@@ -256,6 +256,23 @@ as Curate. Full design lives in `TOPIC-EDIT-SPEC.md`.
   existed since Phase 1; this round is the first thing to call them from the
   UI, and the first to test them.
 
+## Verse removal (round 3 — shipped)
+
+A verse can now be dropped from a topic straight from the Study tab, via a
+`Remove` link and an inline session-only `Undo` strip. Full design lives in
+`VERSE-REMOVE-SPEC.md`.
+
+- **No backend change at all.** `DELETE /api/topics/{id}/verses/{verse_id}`
+  existed since Phase 1 with no coverage; this round is the first thing to
+  call it from the Study tab, and the first to test it.
+- **Remove is a hard delete of the link**, not a rejection — the verse goes
+  back to being unmarked, and `rejected_count` stays reserved for verses
+  turned down during curation.
+- **Undo re-POSTs from the verse still held in memory**, restoring status,
+  source, and note; `added_at` becomes the time of the undo. The Curate
+  tab's cached results are patched in place so the two tabs never disagree
+  about a verse's status mid-session.
+
 ## Later phases (do NOT build now — context only)
 
 - **Phase 2 — review-loop polish:** saved searches per topic, provenance

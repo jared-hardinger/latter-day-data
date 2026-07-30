@@ -143,6 +143,14 @@ A verse's note can also be edited straight from the Study tab now (an
 **Add note** / **Edit note** link under each verse), not just from a Curate
 search — the same note row, AI fill included, is shared between both tabs.
 
+A verse can be dropped from a topic straight from the Study tab too, with a
+**Remove** link beside the note controls. Removing deletes the
+`topic_verses` link outright — note and all — rather than marking the verse
+rejected, so it goes back to being unmarked and shows fresh **Approve** /
+**Reject** buttons if it turns up in a later Curate search. An inline
+**Undo** strip appears in the verse's place; it's session-only and restores
+the verse, its note, and its source if pressed before the next reload.
+
 ### AI writing helpers
 
 Three small Claude-backed helpers draft the fields that are hardest to write

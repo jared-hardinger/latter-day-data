@@ -230,3 +230,136 @@ def test_note_count_includes_rejected_and_excludes_empty(client):
     topic = client.get(f"/api/topics/{topic_id}").json()
     assert topic["note_count"] == 2
     assert topic["rejected_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 6. DELETE /topics/{id}/verses/{verse_id} — round 3
+# ---------------------------------------------------------------------------
+
+
+def _second_test_verse() -> sqlite3.Row:
+    conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT id, book, chapter, verse, text FROM v_verses "
+            "WHERE book = 'Genesis' AND chapter = 1 AND verse = 11"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "expected test fixture verse Genesis 1:11 to exist"
+    return row
+
+
+_SECOND_TEST_VERSE = _second_test_verse()
+
+
+def test_delete_verse_removes_row_and_updates_export(client, paths):
+    topic_id = create_topic(client, "Prayer")
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
+    )
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={"verse_id": _SECOND_TEST_VERSE["id"], "status": "approved", "source": "manual"},
+    )
+    assert topic_verses_count(paths, topic_id) == 2
+
+    resp = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
+    assert resp.status_code == 204
+
+    assert topic_verses_count(paths, topic_id) == 1
+
+    with open(paths["export"]) as f:
+        export = json.load(f)
+    prayer = next(t for t in export if t["name"] == "Prayer")
+    refs = [v["reference"] for v in prayer["verses"]]
+    assert refs == [
+        f"{_SECOND_TEST_VERSE['book']} {_SECOND_TEST_VERSE['chapter']}:{_SECOND_TEST_VERSE['verse']}"
+    ]
+
+
+def test_delete_verse_is_idempotent(client):
+    topic_id = create_topic(client, "Prayer")
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
+    )
+
+    first = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
+    second = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
+    assert first.status_code == 204
+    assert second.status_code == 204
+
+
+def test_delete_verse_scoped_to_one_topic(client, paths):
+    topic_a = create_topic(client, "Prayer")
+    topic_b = create_topic(client, "Adversity")
+    for topic_id in (topic_a, topic_b):
+        client.post(
+            f"/api/topics/{topic_id}/verses",
+            json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
+        )
+
+    resp = client.delete(f"/api/topics/{topic_a}/verses/{_TEST_VERSE['id']}")
+    assert resp.status_code == 204
+
+    assert topic_verses_count(paths, topic_a) == 0
+    assert topic_verses_count(paths, topic_b) == 1
+
+
+def test_undo_round_trip_preserves_note_and_source(client):
+    topic_id = create_topic(client, "Prayer")
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={
+            "verse_id": _TEST_VERSE["id"],
+            "status": "approved",
+            "source": "phrase",
+            "note": "the counsel comes before the doing",
+        },
+    )
+
+    resp = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
+    assert resp.status_code == 204
+
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={
+            "verse_id": _TEST_VERSE["id"],
+            "status": "approved",
+            "source": "phrase",
+            "note": "the counsel comes before the doing",
+        },
+    )
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    verse = next(v for v in topic["verses"] if v["verse_id"] == _TEST_VERSE["id"])
+    assert verse["note"] == "the counsel comes before the doing"
+    assert verse["source"] == "phrase"
+
+
+def test_delete_then_repost_without_note_yields_empty_note(client):
+    topic_id = create_topic(client, "Prayer")
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={
+            "verse_id": _TEST_VERSE["id"],
+            "status": "approved",
+            "source": "manual",
+            "note": "the counsel comes before the doing",
+        },
+    )
+
+    resp = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
+    assert resp.status_code == 204
+
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
+    )
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    verse = next(v for v in topic["verses"] if v["verse_id"] == _TEST_VERSE["id"])
+    assert verse["note"] == ""
