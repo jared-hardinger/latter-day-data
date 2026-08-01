@@ -151,6 +151,17 @@ rejected, so it goes back to being unmarked and shows fresh **Approve** /
 **Undo** strip appears in the verse's place; it's session-only and restores
 the verse, its note, and its source if pressed before the next reload.
 
+Both tabs show a **volume summary strip** — all five volumes, always, zeros
+included — above their verse list. Clicking a volume filters the list below
+it; **Clear filter** returns to everything. The two strips look identical
+but count different things: Study's counts approved verses in the topic and
+only changes when you remove or undo one, while Curate's counts matches for
+the current search and only changes when you run a new search (approving or
+rejecting a result doesn't move it). Curate's filter re-queries the server,
+so it isn't limited to whatever landed in the first page of results; Study's
+filter is a client-side filter over the verses already on screen. Both
+filters are session-only, clearing on tab switch, navigation, and reload.
+
 ### AI writing helpers
 
 Three small Claude-backed helpers draft the fields that are hardest to write
@@ -200,6 +211,12 @@ since there's no stemmer), **exact** (whole-word match), and **phrase**
 (the whole query as one quoted phrase). Rejecting a verse in a topic is
 remembered, so the same near-misses don't resurface as fresh candidates on
 the next search.
+
+`GET /api/search` also takes an optional `volume_id`, restricting the
+returned rows (and `total`) to that volume — this is what backs the Curate
+tab's volume filter chips. It doesn't change the response's `volume_counts`,
+which always describes the unfiltered query, so the strip stays a stable
+navigation control while you click between volumes.
 
 ## General Conference Talk Corpus Builder
 

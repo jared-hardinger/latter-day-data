@@ -15,7 +15,7 @@ body {
 }
 a { color: #4a90d9; }
 #app {
-  max-width: 760px;
+  max-width: 874px;
   margin: 0 auto;
 }
 h1 {
@@ -144,7 +144,13 @@ button.btn-reject:hover { background: #4e1a1a; border-color: #d94a4a; }
 }
 .tab-btn:hover { background: none; color: #ccc; }
 .tab-btn.active { color: #fff; border-bottom-color: #4a90d9; }
-.verse-block { margin-bottom: 1.5rem; }
+.verse-block {
+  background: #16213e;
+  border: 1px solid #2a3a5e;
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.2rem;
+}
 .verse-ref {
   font-weight: 600;
   color: #4a90d9;
@@ -175,10 +181,13 @@ button.btn-reject:hover { background: #4e1a1a; border-color: #d94a4a; }
 }
 .result {
   list-style: none;
-  border-bottom: 1px solid #2a3a5e;
-  padding: 1rem 0;
+  background: #16213e;
+  border: 1px solid #2a3a5e;
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.2rem;
 }
-.result:last-child { border-bottom: none; }
+.result:last-child { margin-bottom: 0; }
 .result-ref {
   font-weight: 600;
   color: #4a90d9;
@@ -239,10 +248,26 @@ button.btn-danger:hover { background: #4e1a1a; border-color: #d94a4a; color: #ff
 .note-actions { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.4rem; }
 .removed-strip {
   display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
-  padding: 0.6rem 0.8rem; margin-bottom: 1.5rem;
-  background: #0f1626; border: 1px dashed #2a3a5e; border-radius: 6px;
   color: #999; font-size: 0.9rem;
 }
+.volume-summary { margin-bottom: 1.4rem; }
+.volume-summary-label { color: #999; font-size: 0.85rem; margin-bottom: 0.5rem; }
+.volume-chips { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.volume-chip {
+  display: inline-block;
+  font-family: inherit;
+  font-size: 0.85rem;
+  border-radius: 999px;
+  padding: 0.25rem 0.8rem;
+  border: 1px solid #2a3a5e;
+  background: #16213e;
+  color: #ccc;
+}
+button.volume-chip { cursor: pointer; }
+button.volume-chip:hover { border-color: #4a90d9; color: #fff; }
+.volume-chip.active { border-color: #4a90d9; background: #1a2a4e; color: #fff; }
+.volume-chip.zero { color: #666; }
+.volume-clear-btn { margin-left: 0.1rem; }
 </style>
 </head>
 <body>
@@ -619,19 +644,98 @@ function closeDeleteModal() {
   if (triggerBtn) triggerBtn.focus();
 }
 
+// ---------------------------------------------------------------------------
+// Volume summary strip — shared by the Study and Curate tabs. Renders every
+// entry it is given, in the given order; it does not know the volume names,
+// so there is no hardcoded canon list here.
+// ---------------------------------------------------------------------------
+
+function volumeSummaryHtml(counts, activeVolumeId, label) {
+  const chips = counts.map(c => {
+    const classes = ["volume-chip"];
+    if (c.volume_id === activeVolumeId) classes.push("active");
+    const chipLabel = `${escapeHtml(c.volume)} ${c.count}`;
+    if (c.count === 0) {
+      // Zero-count chips are non-interactive: a zero is information, not a
+      // destination.
+      return `<span class="${classes.join(" ")} zero" data-volume-id="${c.volume_id}">${chipLabel}</span>`;
+    }
+    return `<button type="button" class="${classes.join(" ")}" data-volume-id="${c.volume_id}">${chipLabel}</button>`;
+  }).join("");
+  const clearBtn = activeVolumeId != null
+    ? `<button type="button" class="link-btn volume-clear-btn">Clear filter</button>`
+    : "";
+  return `
+    <div class="volume-summary">
+      <div class="volume-summary-label">${escapeHtml(label)}</div>
+      <div class="volume-chips">${chips}${clearBtn}</div>
+    </div>
+  `;
+}
+
+function wireVolumeSummary(root, onSelect) {
+  root.querySelectorAll("button.volume-chip").forEach(chip => {
+    chip.addEventListener("click", () => onSelect(Number(chip.dataset.volumeId)));
+  });
+  const clearBtn = root.querySelector(".volume-clear-btn");
+  if (clearBtn) clearBtn.addEventListener("click", () => onSelect(null));
+}
+
+// ---------------------------------------------------------------------------
+// Study tab
+// ---------------------------------------------------------------------------
+
+// Session-only, like round 3's undo strip: cleared on every render of the
+// Study tab (page load and tab switch both go through renderStudyTab), never
+// persisted alongside topic state.
+let studyVolumeFilter = null;
+
+function studyVolumeSummaryLabel(topic) {
+  const n = topic.verses.length;
+  return `In this topic — ${n} verse${n === 1 ? "" : "s"}`;
+}
+
+function renderStudyVolumeSummary(topic) {
+  const root = document.getElementById("study-volume-summary");
+  if (!root) return;
+  root.innerHTML = volumeSummaryHtml(topic.volume_counts, studyVolumeFilter, studyVolumeSummaryLabel(topic));
+  wireVolumeSummary(root, (volumeId) => {
+    studyVolumeFilter = volumeId;
+    renderStudyVolumeSummary(topic);
+    renderStudyVerseList(topic);
+  });
+}
+
+function renderStudyVerseList(topic) {
+  const listEl = document.getElementById("study-verse-list");
+  const verses = topic.verses.filter(v => !studyVolumeFilter || v.volume_id === studyVolumeFilter);
+  if (verses.length === 0) {
+    const filtered = topic.volume_counts.find(c => c.volume_id === studyVolumeFilter);
+    listEl.innerHTML = `<p class="empty-state">No ${escapeHtml(filtered ? filtered.volume : "")} verses in this topic.</p>`;
+    return;
+  }
+  listEl.innerHTML = verses.map(v => `
+    <div class="verse-block" data-verse-id="${v.verse_id}">${studyVerseInnerHtml(v)}</div>
+  `).join("");
+
+  listEl.querySelectorAll(".note-area").forEach(area => {
+    const verseId = Number(area.dataset.verseId);
+    wireStudyNoteArea(area, topic, verseId);
+  });
+}
+
 function renderStudyTab(content, topic) {
+  studyVolumeFilter = null;
   if (topic.verses.length === 0) {
     content.innerHTML = `<p class="empty-state">No approved verses yet. Switch to the Curate tab to search and approve some.</p>`;
     return;
   }
-  content.innerHTML = topic.verses.map(v => `
-    <div class="verse-block" data-verse-id="${v.verse_id}">${studyVerseInnerHtml(v)}</div>
-  `).join("");
-
-  content.querySelectorAll(".note-area").forEach(area => {
-    const verseId = Number(area.dataset.verseId);
-    wireStudyNoteArea(area, topic, verseId);
-  });
+  content.innerHTML = `
+    <div id="study-volume-summary"></div>
+    <div id="study-verse-list"></div>
+  `;
+  renderStudyVolumeSummary(topic);
+  renderStudyVerseList(topic);
 }
 
 function studyVerseInnerHtml(v) {
@@ -682,6 +786,22 @@ function forgetVerseLocally(topic, verse) {
   topic.verses = topic.verses.filter(v => v.verse_id !== verse.verse_id);
   if (verse.note) topic.note_count -= 1;
   patchCuratedStatus(verse.verse_id, null, "");
+  patchStudySummary(topic);
+}
+
+// Recomputes volume_counts from topic.verses (the in-memory source of truth
+// after a local forget/restore) and replaces only the strip's inner HTML —
+// removeStudyVerse never re-renders the verse list, so this must not either,
+// or it would destroy other verses' undo strips.
+function patchStudySummary(topic) {
+  const counts = topic.volume_counts.map(c => ({ ...c, count: 0 }));
+  const byId = new Map(counts.map(c => [c.volume_id, c]));
+  for (const v of topic.verses) {
+    const c = byId.get(v.volume_id);
+    if (c) c.count += 1;
+  }
+  topic.volume_counts = counts;
+  renderStudyVolumeSummary(topic);
 }
 
 function renderStudyRemovedStrip(block, topic, verse) {
@@ -724,6 +844,7 @@ function restoreVerseLocally(topic, verse) {
   topic.verses.splice(at === -1 ? topic.verses.length : at, 0, verse);
   if (verse.note) topic.note_count += 1;
   patchCuratedStatus(verse.verse_id, "approved", verse.note);
+  patchStudySummary(topic);
 }
 
 function patchCuratedStatus(verseId, status, note) {
@@ -775,7 +896,10 @@ const MODE_LABELS = {
 
 function renderCurateTab(content, topic) {
   if (!curateState || curateState.topicId !== topic.id) {
-    curateState = { topicId: topic.id, mode: "prefix", results: [], total: 0, query: "" };
+    curateState = {
+      topicId: topic.id, mode: "prefix", results: [], total: 0, query: "",
+      volumeId: null, volumeCounts: [],
+    };
   }
   const state = curateState;
 
@@ -791,12 +915,13 @@ function renderCurateTab(content, topic) {
     </div>
     <div class="error-msg" id="search-error"></div>
     <div class="match-count" id="match-count"></div>
+    <div id="volume-summary"></div>
     <ul id="results"></ul>
   `;
 
   const qInput = document.getElementById("search-q");
   const modeSelect = document.getElementById("search-mode");
-  const runSearch = () => doSearch(content, topic.id, qInput.value.trim(), modeSelect.value);
+  const runSearch = () => doSearch(content, topic.id, qInput.value.trim(), modeSelect.value, null);
 
   document.getElementById("search-btn").addEventListener("click", runSearch);
   qInput.addEventListener("keydown", (e) => {
@@ -808,24 +933,49 @@ function renderCurateTab(content, topic) {
   }
 }
 
-async function doSearch(content, topicId, query, mode) {
+async function doSearch(content, topicId, query, mode, volumeId) {
   const errBox = document.getElementById("search-error");
   errBox.textContent = "";
   if (!query) return;
   curateState.mode = mode;
   curateState.query = query;
+  curateState.volumeId = volumeId != null ? volumeId : null;
   try {
-    const data = await api(`/search?q=${encodeURIComponent(query)}&mode=${encodeURIComponent(mode)}&topic_id=${topicId}`);
+    let url = `/search?q=${encodeURIComponent(query)}&mode=${encodeURIComponent(mode)}&topic_id=${topicId}`;
+    if (curateState.volumeId != null) url += `&volume_id=${curateState.volumeId}`;
+    const data = await api(url);
     curateState.results = data.results;
     curateState.total = data.total;
+    curateState.volumeCounts = data.volume_counts;
     renderResults(content, topicId);
   } catch (err) {
     curateState.results = [];
     curateState.total = 0;
+    curateState.volumeCounts = [];
     document.getElementById("match-count").textContent = "";
+    document.getElementById("volume-summary").innerHTML = "";
     document.getElementById("results").innerHTML = "";
     errBox.textContent = err.message;
   }
+}
+
+function curateVolumeSummaryLabel(state) {
+  const total = state.volumeCounts.reduce((sum, c) => sum + c.count, 0);
+  return `${total} match${total === 1 ? "" : "es"} by volume`;
+}
+
+function renderCurateVolumeSummary(content, topicId) {
+  const root = document.getElementById("volume-summary");
+  if (!root) return;
+  const state = curateState;
+  if (state.volumeCounts.length === 0) {
+    root.innerHTML = "";
+    return;
+  }
+  root.innerHTML = volumeSummaryHtml(state.volumeCounts, state.volumeId, curateVolumeSummaryLabel(state));
+  wireVolumeSummary(root, (volumeId) => {
+    doSearch(content, topicId, state.query, state.mode, volumeId);
+  });
 }
 
 function renderResults(content, topicId) {
@@ -834,6 +984,8 @@ function renderResults(content, topicId) {
     state.total > 0
       ? `${state.total} match${state.total === 1 ? "" : "es"}${state.total > state.results.length ? ` (showing ${state.results.length})` : ""}`
       : (state.query ? "No matches." : "");
+
+  renderCurateVolumeSummary(content, topicId);
 
   const resultsEl = document.getElementById("results");
   resultsEl.innerHTML = state.results.map(renderResultRow).join("");

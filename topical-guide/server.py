@@ -291,26 +291,34 @@ def get_topic(
         "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND note != ''",
         (topic_id,),
     ).fetchone()[0]
+    volume_counts = {
+        v["id"]: {"volume_id": v["id"], "volume": v["name"], "count": 0}
+        for v in fts_db.execute("SELECT id, name FROM volumes ORDER BY id").fetchall()
+    }
     verses = []
     for link in approved:
         row = fts_db.execute(
-            "SELECT book, chapter, verse, text FROM v_verses WHERE id = ?",
+            "SELECT volume, volume_id, book, chapter, verse, text FROM v_verses WHERE id = ?",
             (link["verse_id"],),
         ).fetchone()
         verses.append(
             {
                 "verse_id": link["verse_id"],
+                "volume": row["volume"],
+                "volume_id": row["volume_id"],
                 "reference": f"{row['book']} {row['chapter']}:{row['verse']}",
                 "text": row["text"],
                 "note": link["note"],
                 "source": link["source"],
             }
         )
+        volume_counts[row["volume_id"]]["count"] += 1
     return {
         "id": topic["id"],
         "name": topic["name"],
         "description": topic["description"],
         "verses": verses,
+        "volume_counts": list(volume_counts.values()),
         "rejected_count": rejected_count,
         "note_count": note_count,
     }
@@ -443,6 +451,7 @@ def search(
     q: str,
     mode: Literal["prefix", "exact", "phrase"] = "prefix",
     topic_id: Optional[int] = None,
+    volume_id: Optional[int] = None,
     limit: int = Query(50, ge=1, le=500),
     guide_db=Depends(get_guide_db),
     fts_db=Depends(get_fts_db),
@@ -456,24 +465,61 @@ def search(
         if topic is None:
             raise HTTPException(404, "Topic not found")
 
+    if volume_id is not None:
+        volume = fts_db.execute(
+            "SELECT id FROM volumes WHERE id = ?", (volume_id,)
+        ).fetchone()
+        if volume is None:
+            raise HTTPException(404, "Volume not found")
+
     try:
-        rows = fts_db.execute(
+        if volume_id is not None:
+            rows = fts_db.execute(
+                """
+                SELECT f.rowid AS verse_id,
+                       highlight(verses_fts, 0, '<mark>', '</mark>') AS highlighted
+                FROM verses_fts f
+                JOIN v_verses vv ON vv.id = f.rowid
+                WHERE verses_fts MATCH ? AND vv.volume_id = ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (match_query, volume_id, limit),
+            ).fetchall()
+        else:
+            rows = fts_db.execute(
+                """
+                SELECT f.rowid AS verse_id,
+                       highlight(verses_fts, 0, '<mark>', '</mark>') AS highlighted
+                FROM verses_fts f
+                WHERE verses_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (match_query, limit),
+            ).fetchall()
+
+        # MATCH must sit in a WHERE clause so FTS5 drives the query — the
+        # equivalent LEFT JOIN ... ON verses_fts MATCH ? form is correct but
+        # measured over 120s (vs 21ms here) on broad queries.
+        volume_match_rows = fts_db.execute(
             """
-            SELECT f.rowid AS verse_id,
-                   highlight(verses_fts, 0, '<mark>', '</mark>') AS highlighted
-            FROM verses_fts f
+            SELECT vv.volume_id, vv.volume, COUNT(*) AS count
+            FROM verses_fts f JOIN v_verses vv ON vv.id = f.rowid
             WHERE verses_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
+            GROUP BY vv.volume_id ORDER BY vv.volume_id
             """,
-            (match_query, limit),
-        ).fetchall()
-        total = fts_db.execute(
-            "SELECT COUNT(*) FROM verses_fts WHERE verses_fts MATCH ?",
             (match_query,),
-        ).fetchone()[0]
+        ).fetchall()
     except sqlite3.OperationalError:
         raise HTTPException(400, "Invalid search query")
+
+    counts_by_volume = {r["volume_id"]: r["count"] for r in volume_match_rows}
+    volume_counts = [
+        {"volume_id": v["id"], "volume": v["name"], "count": counts_by_volume.get(v["id"], 0)}
+        for v in fts_db.execute("SELECT id, name FROM volumes ORDER BY id").fetchall()
+    ]
+    total = counts_by_volume.get(volume_id, 0) if volume_id is not None else sum(counts_by_volume.values())
 
     status_map = {}
     if topic_id is not None and rows:
@@ -497,7 +543,7 @@ def search(
             }
         )
 
-    return {"total": total, "results": results}
+    return {"total": total, "results": results, "volume_counts": volume_counts}
 
 
 # ---------------------------------------------------------------------------

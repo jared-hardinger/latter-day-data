@@ -363,3 +363,148 @@ def test_delete_then_repost_without_note_yields_empty_note(client):
     topic = client.get(f"/api/topics/{topic_id}").json()
     verse = next(v for v in topic["verses"] if v["verse_id"] == _TEST_VERSE["id"])
     assert verse["note"] == ""
+
+
+# ---------------------------------------------------------------------------
+# 7. Volume summary and filter — round 4
+# ---------------------------------------------------------------------------
+
+_CANONICAL_VOLUMES = [
+    "Old Testament",
+    "New Testament",
+    "Book of Mormon",
+    "Doctrine and Covenants",
+    "Pearl of Great Price",
+]
+
+
+def test_topic_volume_counts_five_entries_one_nonzero(client):
+    topic_id = create_topic(client, "Prayer")
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
+    )
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    counts = topic["volume_counts"]
+    assert [c["volume"] for c in counts] == _CANONICAL_VOLUMES
+    assert [c["volume_id"] for c in counts] == [1, 2, 3, 4, 5]
+    assert [c["count"] for c in counts] == [1, 0, 0, 0, 0]
+
+
+def test_topic_volume_counts_five_zeros_when_no_verses(client):
+    topic_id = create_topic(client, "Prayer")
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    counts = topic["volume_counts"]
+    assert [c["volume"] for c in counts] == _CANONICAL_VOLUMES
+    assert [c["count"] for c in counts] == [0, 0, 0, 0, 0]
+
+
+def test_topic_volume_counts_excludes_rejected(client):
+    topic_id = create_topic(client, "Prayer")
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={"verse_id": _TEST_VERSE["id"], "status": "rejected", "source": "manual"},
+    )
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    counts = topic["volume_counts"]
+    assert [c["count"] for c in counts] == [0, 0, 0, 0, 0]
+
+
+def test_topic_verses_carry_volume_fields(client):
+    topic_id = create_topic(client, "Prayer")
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
+    )
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    verse = topic["verses"][0]
+    assert verse["volume"] == "Old Testament"
+    assert verse["volume_id"] == 1
+
+
+def test_search_volume_counts_sum_to_total(client):
+    resp = client.get("/api/search", params={"q": "money", "mode": "prefix"})
+    assert resp.status_code == 200
+    data = resp.json()
+    counts = data["volume_counts"]
+    assert [c["volume"] for c in counts] == _CANONICAL_VOLUMES
+    assert sum(c["count"] for c in counts) == data["total"]
+    by_volume = {c["volume"]: c["count"] for c in counts}
+    assert by_volume == {
+        "Old Testament": 101,
+        "New Testament": 24,
+        "Book of Mormon": 13,
+        "Doctrine and Covenants": 38,
+        "Pearl of Great Price": 1,
+    }
+    assert data["total"] == 177
+
+
+def test_search_volume_id_filters_results_and_total(client):
+    resp = client.get(
+        "/api/search", params={"q": "money", "mode": "prefix", "volume_id": 1}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 101
+    assert len(data["results"]) <= 50
+    # Every returned result must actually belong to volume 1 (Old Testament).
+    conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
+    try:
+        for r in data["results"]:
+            volume_id = conn.execute(
+                "SELECT volume_id FROM v_verses WHERE id = ?", (r["verse_id"],)
+            ).fetchone()[0]
+            assert volume_id == 1
+    finally:
+        conn.close()
+
+
+def test_search_volume_counts_identical_with_and_without_volume_id(client):
+    unfiltered = client.get("/api/search", params={"q": "money", "mode": "prefix"}).json()
+    filtered = client.get(
+        "/api/search", params={"q": "money", "mode": "prefix", "volume_id": 3}
+    ).json()
+    assert filtered["volume_counts"] == unfiltered["volume_counts"]
+
+
+def test_search_unknown_volume_id_404(client):
+    resp = client.get(
+        "/api/search", params={"q": "money", "mode": "prefix", "volume_id": 999}
+    )
+    assert resp.status_code == 404
+
+
+def test_search_volume_id_with_topic_id_status_in_topic(client):
+    topic_id = create_topic(client, "Prayer")
+    # Genesis 17:12 — an Old Testament verse matching "money"*.
+    conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
+    try:
+        ot_money_verse_id = conn.execute(
+            "SELECT id FROM v_verses WHERE book = 'Genesis' AND chapter = 17 AND verse = 12"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    client.post(
+        f"/api/topics/{topic_id}/verses",
+        json={"verse_id": ot_money_verse_id, "status": "approved", "source": "manual"},
+    )
+
+    resp = client.get(
+        "/api/search",
+        params={
+            "q": "money",
+            "mode": "prefix",
+            "volume_id": 1,
+            "topic_id": topic_id,
+            "limit": 500,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    result = next(r for r in data["results"] if r["verse_id"] == ot_money_verse_id)
+    assert result["status_in_topic"] == "approved"
