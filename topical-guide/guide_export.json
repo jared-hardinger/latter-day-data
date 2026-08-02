@@ -57,11 +57,11 @@
         "note": "Prayer is not something you do once a day or only when you need help. It is meant to be continuous, woven through your whole life and all your activities."
       },
       {
-        "reference": "James 5:16",
-        "verse_count": 1,
+        "reference": "James 5:14-16",
+        "verse_count": 3,
         "status": "approved",
-        "source": "phrase",
-        "note": "Fervent prayer, real prayer, does a lot. It has real impact."
+        "source": "manual",
+        "note": "Fervent prayer works. It brings about real change."
       },
       {
         "reference": "Mosiah 26:39",
@@ -71,10 +71,10 @@
         "note": "We're commanded to always give thanks no matter what situation we're in."
       },
       {
-        "reference": "Alma 34:19",
-        "verse_count": 1,
+        "reference": "Alma 34:17-27",
+        "verse_count": 11,
         "status": "approved",
-        "source": "prefix",
+        "source": "manual",
         "note": "Prayer and humility go together"
       },
       {
