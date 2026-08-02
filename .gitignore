@@ -8,3 +8,6 @@ __pycache__/
 scriptures/scriptures_fts.db
 topical-guide/.env
 topical-guide/ai_log.db
+
+# Handoff prompts are scratch — the spec is the committed record of a round.
+topical-guide/docs/handoffs/

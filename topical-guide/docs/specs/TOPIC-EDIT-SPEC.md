@@ -84,7 +84,7 @@ call `write_export`, and are already correct.
 
 ```
 topical-guide/
-  TOPIC-EDIT-SPEC.md   # this file
+  docs/specs/TOPIC-EDIT-SPEC.md   # this file
   ai.py                # + 2 prompt constants, + 1 output model, + 1 FEATURES entry
   server.py            # + note_count on GET /api/topics/{id}, + 1 polish endpoint
   static/index.html    # + edit mode, + delete modal, + shared/editable note row, + CSS
@@ -507,7 +507,7 @@ Verify each by actually doing it:
 
 ## Docs to update in the same commit
 
-- **`topical-guide/PLAN.md`** — add a short "Topic editing (round 2 — shipped)"
+- **`topical-guide/docs/PLAN.md`** — add a short "Topic editing (round 2 — shipped)"
   section after the AI-helpers one, pointing at this file. Fix the round-1
   section's line "no topic edit form" — it is history, so mark it superseded
   rather than deleting it.
@@ -515,7 +515,7 @@ Verify each by actually doing it:
   from their page; deletion is permanent and takes its verses and notes with it;
   the third AI helper polishes a description against the topic's approved
   verses.
-- **`topical-guide/AI-HELPERS-SPEC.md`** — leave it as the round-1 record. Add
+- **`topical-guide/docs/specs/AI-HELPERS-SPEC.md`** — leave it as the round-1 record. Add
   one line under "Not in this round" noting that the topic edit form and the
   polish helper landed in `TOPIC-EDIT-SPEC.md`.
 

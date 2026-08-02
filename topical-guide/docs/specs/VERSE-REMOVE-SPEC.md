@@ -75,7 +75,7 @@ an endpoint that has never had any.
 
 ```
 topical-guide/
-  VERSE-REMOVE-SPEC.md   # this file
+  docs/specs/VERSE-REMOVE-SPEC.md   # this file
   static/index.html      # + Remove button, + undo strip, + cache patch, + CSS
   test_server.py         # + 5 tests for DELETE /topics/{id}/verses/{verse_id}
 ```
@@ -388,9 +388,9 @@ Verify each by actually doing it:
   removed from a topic straight from the Study tab, with an inline Undo;
   removing deletes the link and its note outright rather than marking the verse
   rejected.
-- **`topical-guide/PLAN.md`** — a short "Verse removal (round 3 — shipped)"
+- **`topical-guide/docs/PLAN.md`** — a short "Verse removal (round 3 — shipped)"
   section after the round-2 one, pointing at this file.
-- **`topical-guide/TOPIC-EDIT-SPEC.md`** — strike through the "No remove/reject
+- **`topical-guide/docs/specs/TOPIC-EDIT-SPEC.md`** — strike through the "No remove/reject
   control on approved verses in the Study tab" bullet under *Not in this round*
   and point it here, matching how the `suggested_name` bullet was superseded.
 

@@ -1,6 +1,6 @@
 # AI writing helpers for the Topical Guide — round 1
 
-Read `topical-guide/PLAN.md` first (especially **Decisions already made** — this
+Read `topical-guide/docs/PLAN.md` first (especially **Decisions already made** — this
 round does not reopen any of them). Then skim
 `/Users/hardingerfamily/Documents/dev/family-finance-hub/server/app/ai/service.py`
 and the `fill_category` endpoint in that repo's
@@ -737,7 +737,7 @@ Verify each by actually doing it:
 
 Per Jared's standing rule: docs first, then code, one commit.
 
-- **`topical-guide/PLAN.md`** — add an "AI writing helpers" section recording the
+- **`topical-guide/docs/PLAN.md`** — add an "AI writing helpers" section recording the
   decisions above (Haiku to start, the house style, logs in a separate gitignored
   DB, fill-then-review, no write path). Under **Later phases**, note that Phase
   4's "LLM-assisted candidate suggestion" is still ahead and that this round

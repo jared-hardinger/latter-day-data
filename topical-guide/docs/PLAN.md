@@ -69,7 +69,10 @@ tools in the repo, but reads the shared scripture database in `scriptures/`.
 
 ```
 topical-guide/
-  PLAN.md              # this file
+  docs/
+    PLAN.md            # this file
+    specs/             # one <FEATURE>-SPEC.md per round; committed with its implementation
+    handoffs/          # <FEATURE>-HANDOFF.md paste prompts; gitignored scratch
   requirements.txt     # fastapi, uvicorn
   server.py            # FastAPI app: serves static UI + JSON API
   guide.db             # curated data (committed; created by server on first run)
