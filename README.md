@@ -30,10 +30,10 @@ Three tables plus a convenience view:
 
 | table | columns | notes |
 |---|---|---|
-| `volumes` | `id`, `name` | 1=Old Testament, 2=New Testament, 3=Book of Mormon, 4=Doctrine and Covenants, 5=Pearl of Great Price |
-| `books` | `id`, `volume_id`, `name`, `position` | 87 books; `position` = canonical order within the volume |
+| `volumes` | `id`, `name`, `lds_url` | 1=Old Testament, 2=New Testament, 3=Book of Mormon, 4=Doctrine and Covenants, 5=Pearl of Great Price; `lds_url` is the churchofjesuschrist.org volume slug (e.g. `bofm`) |
+| `books` | `id`, `volume_id`, `name`, `position`, `lds_url` | 87 books; `position` = canonical order within the volume; `lds_url` is the churchofjesuschrist.org book slug (e.g. `jacob`) |
 | `verses` | `id`, `book_id`, `chapter`, `verse`, `text` | one row per verse; D&C section numbers live in `chapter` |
-| `v_verses` (view) | `id`, `volume_id`, `volume`, `book_id`, `book`, `chapter`, `verse`, `text` | flat join for easy querying |
+| `v_verses` (view) | `id`, `volume_id`, `volume`, `volume_url`, `book_id`, `book`, `book_url`, `chapter`, `verse`, `text` | flat join for easy querying; `volume_url`/`book_url` are the `lds_url` slugs, used to build churchofjesuschrist.org deep links |
 
 ```sql
 sqlite3 scriptures/scriptures.db \
@@ -217,6 +217,14 @@ returned rows (and `total`) to that volume — this is what backs the Curate
 tab's volume filter chips. It doesn't change the response's `volume_counts`,
 which always describes the unfiltered query, so the strip stays a stable
 navigation control while you click between volumes.
+
+### Verse context
+
+Clicking a reference — on the Study tab or the Curate tab — opens a
+read-only right-side panel showing the verse's whole chapter, with the
+subject verse highlighted and scrolled into view. The panel header links out
+to the same chapter on churchofjesuschrist.org, opening in a new tab.
+`GET /api/chapter?verse_id=N` is the endpoint behind it.
 
 ## General Conference Talk Corpus Builder
 

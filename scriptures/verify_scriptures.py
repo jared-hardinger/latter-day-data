@@ -18,7 +18,6 @@ Requires: pip install requests beautifulsoup4 lxml  (same as the scraper)
 """
 
 import argparse
-import csv
 import difflib
 import random
 import re
@@ -29,7 +28,7 @@ import unicodedata
 import requests
 from bs4 import BeautifulSoup
 
-from build_scriptures_db import CSV_PATH, DB_PATH, fetch_csv
+from build_scriptures_db import DB_PATH
 
 BASE_URL = "https://www.churchofjesuschrist.org/study/scriptures"
 
@@ -42,14 +41,15 @@ HEADERS = {
 }
 
 
-def load_slugs():
-    """book name -> (volume_lds_url, book_lds_url) from the cached source CSV."""
-    fetch_csv()
-    slugs = {}
-    with open(CSV_PATH, newline="", encoding="utf-8") as fh:
-        for r in csv.DictReader(fh):
-            slugs[r["book_title"]] = (r["volume_lds_url"], r["book_lds_url"])
-    return slugs
+def load_slugs(db):
+    """book name -> (volume_lds_url, book_lds_url)."""
+    return {
+        name: (volume_url, book_url)
+        for name, volume_url, book_url in db.execute(
+            "SELECT b.name, vol.lds_url, b.lds_url "
+            "FROM books b JOIN volumes vol ON vol.id = b.volume_id"
+        )
+    }
 
 
 def sample_verses(db, per_volume):
@@ -107,8 +107,8 @@ def main():
     if args.seed is not None:
         random.seed(args.seed)
 
-    slugs = load_slugs()
     db = sqlite3.connect(DB_PATH)
+    slugs = load_slugs(db)
     if args.seed is not None:
         # ORDER BY RANDOM() ignores Python's seed; emulate stratification here.
         db.create_function("RANDOM", 0, lambda: random.getrandbits(63))

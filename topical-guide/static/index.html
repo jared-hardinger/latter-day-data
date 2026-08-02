@@ -268,6 +268,44 @@ button.volume-chip:hover { border-color: #4a90d9; color: #fff; }
 .volume-chip.active { border-color: #4a90d9; background: #1a2a4e; color: #fff; }
 .volume-chip.zero { color: #666; }
 .volume-clear-btn { margin-left: 0.1rem; }
+
+.ref-link {
+  background: none; border: none; padding: 0;
+  font: inherit; font-weight: 600; color: #4a90d9;
+  cursor: pointer; text-align: left;
+}
+.ref-link:hover { text-decoration: underline; color: #6fa8e5; background: none; }
+.verse-ref.ref-link { font-size: 0.95rem; margin-bottom: 0.3rem; display: block; }
+.result-ref.ref-link { font-size: 0.9rem; margin-bottom: 0.3rem; display: block; }
+
+.chapter-panel {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(440px, 100vw);
+  background: #16213e; border-left: 1px solid #2a3a5e;
+  z-index: 9; display: flex; flex-direction: column;
+}
+.chapter-panel-head {
+  display: flex; align-items: baseline; gap: 0.8rem;
+  padding: 1.1rem 1.25rem; border-bottom: 1px solid #2a3a5e;
+}
+.chapter-panel-title { font-size: 1.05rem; color: #fff; font-weight: 600; flex: 1; }
+.chapter-panel-ext { font-size: 0.8rem; text-decoration: none; }
+.chapter-panel-ext:hover { text-decoration: underline; }
+.chapter-panel-close { background: none; border: none; color: #999; padding: 0.2rem 0.4rem; }
+.chapter-panel-close:hover { color: #fff; background: none; }
+.chapter-panel-body { overflow-y: auto; padding: 1rem 1.25rem 3rem; }
+.cv { display: flex; gap: 0.6rem; padding: 0.35rem 0.5rem; line-height: 1.6; }
+.cv-num { color: #666; font-size: 0.8rem; min-width: 1.6rem; text-align: right; padding-top: 0.2rem; }
+.cv-current {
+  background: #1a2a4e; border-left: 3px solid #4a90d9;
+  border-radius: 0 6px 6px 0; padding-left: 0.5rem;
+}
+.cv-current .cv-num { color: #4a90d9; }
+
+body.panel-open { padding-right: calc(min(440px, 100vw) + 2rem); }
+@media (max-width: 900px) {
+  body.panel-open { padding-right: 2rem; }
+}
 </style>
 </head>
 <body>
@@ -344,6 +382,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (document.querySelector(".modal-backdrop")) {
     closeDeleteModal();
+    return;
+  }
+  if (chapterPanel) {
+    closeChapterPanel();
     return;
   }
   if (editModeActive && cancelEditFn) {
@@ -446,6 +488,8 @@ async function renderHome(app) {
 let curateState = null; // { topicId, mode, results, total, query }
 let editModeActive = false;
 let cancelEditFn = null;
+let chapterPanel = null;      // the DOM element, or null when closed
+let chapterPanelToken = 0;    // guards against out-of-order fetches
 
 async function renderTopicPage(app, topicId, activeTab) {
   activeTab = activeTab || "study";
@@ -718,9 +762,9 @@ function renderStudyVerseList(topic) {
     <div class="verse-block" data-verse-id="${v.verse_id}">${studyVerseInnerHtml(v)}</div>
   `).join("");
 
-  listEl.querySelectorAll(".note-area").forEach(area => {
-    const verseId = Number(area.dataset.verseId);
-    wireStudyNoteArea(area, topic, verseId);
+  listEl.querySelectorAll(".verse-block").forEach(block => {
+    const verseId = Number(block.dataset.verseId);
+    wireStudyVerseBlock(block, topic, verseId);
   });
 }
 
@@ -740,7 +784,7 @@ function renderStudyTab(content, topic) {
 
 function studyVerseInnerHtml(v) {
   return `
-    <div class="verse-ref">${escapeHtml(v.reference)}</div>
+    <button type="button" class="verse-ref ref-link" data-verse-id="${v.verse_id}">${escapeHtml(v.reference)}</button>
     <div class="verse-text">${escapeHtml(v.text)}</div>
     <div class="note-area" data-verse-id="${v.verse_id}">${studyNoteDisplayHtml(v)}</div>
   `;
@@ -764,6 +808,12 @@ function wireStudyNoteArea(area, topic, verseId) {
   area.querySelector(".verse-remove-btn").addEventListener("click", (e) => {
     removeStudyVerse(area.closest(".verse-block"), topic, verseId, e.currentTarget);
   });
+}
+
+function wireStudyVerseBlock(block, topic, verseId) {
+  wireStudyNoteArea(block.querySelector(".note-area"), topic, verseId);
+  const refBtn = block.querySelector(".ref-link");
+  refBtn.addEventListener("click", () => openChapterPanel(verseId, refBtn));
 }
 
 async function removeStudyVerse(block, topic, verseId, btn) {
@@ -835,7 +885,7 @@ async function undoStudyRemove(block, topic, verse, btn) {
   }
   restoreVerseLocally(topic, verse);
   block.innerHTML = studyVerseInnerHtml(verse);
-  wireStudyNoteArea(block.querySelector(".note-area"), topic, verse.verse_id);
+  wireStudyVerseBlock(block, topic, verse.verse_id);
   block.querySelector(".verse-remove-btn").focus();
 }
 
@@ -997,6 +1047,8 @@ function renderResults(content, topicId) {
       node.addEventListener("click", () => setVerseStatus(topicId, verseId, action === "approve" ? "approved" : "rejected"));
     } else if (action === "undo") {
       node.addEventListener("click", () => undoVerse(topicId, verseId));
+    } else if (action === "context") {
+      node.addEventListener("click", () => openChapterPanel(verseId, node));
     }
   });
 
@@ -1030,7 +1082,7 @@ function renderResultRow(r) {
   }
   return `
     <li class="result">
-      <div class="result-ref">${escapeHtml(r.reference)}</div>
+      <button type="button" class="result-ref ref-link" data-action="context" data-verse-id="${r.verse_id}">${escapeHtml(r.reference)}</button>
       <div class="result-text">${r.highlighted}</div>
       <div class="result-actions">${statusHtml}</div>
     </li>
@@ -1131,6 +1183,77 @@ function wireNoteRow(root, topicId, onSaved) {
       fillBtn.textContent = originalLabel;
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Chapter context panel — mounted on document.body (not #app), since both
+// tabs re-render #tab-content freely and would destroy it. Read-only: no
+// approve/reject/note editing lives here.
+// ---------------------------------------------------------------------------
+
+function chapterPanelShellHtml() {
+  return `
+    <div class="chapter-panel" role="complementary" aria-label="Chapter context">
+      <div class="chapter-panel-head">
+        <div class="chapter-panel-title">Loading…</div>
+        <button type="button" class="chapter-panel-close" aria-label="Close">&#10005;</button>
+      </div>
+      <div class="chapter-panel-body">Loading…</div>
+    </div>
+  `;
+}
+
+async function openChapterPanel(verseId, triggerBtn) {
+  if (!chapterPanel) {
+    chapterPanel = el(chapterPanelShellHtml());
+    document.body.appendChild(chapterPanel);
+    document.body.classList.add("panel-open");
+    chapterPanel.querySelector(".chapter-panel-close").addEventListener("click", closeChapterPanel);
+  } else {
+    chapterPanel.querySelector(".chapter-panel-title").textContent = "Loading…";
+    chapterPanel.querySelector(".chapter-panel-body").textContent = "Loading…";
+    const existingExt = chapterPanel.querySelector(".chapter-panel-ext");
+    if (existingExt) existingExt.remove();
+  }
+  chapterPanel._triggerBtn = triggerBtn;
+
+  const token = ++chapterPanelToken;
+  let data;
+  try {
+    data = await api("/chapter?verse_id=" + verseId);
+  } catch (err) {
+    if (token !== chapterPanelToken) return;
+    chapterPanel.querySelector(".chapter-panel-title").textContent = "Error";
+    chapterPanel.querySelector(".chapter-panel-body").innerHTML =
+      `<p class="error-msg">${escapeHtml(err.message)}</p>`;
+    chapterPanel.querySelector(".chapter-panel-close").focus();
+    return;
+  }
+  if (token !== chapterPanelToken) return;
+
+  const head = chapterPanel.querySelector(".chapter-panel-head");
+  head.querySelector(".chapter-panel-title").textContent = data.reference;
+  const extLink = el(`<a class="chapter-panel-ext" href="${escapeHtml(data.external_url)}" target="_blank" rel="noopener noreferrer">churchofjesuschrist.org &#8599;</a>`);
+  head.insertBefore(extLink, head.querySelector(".chapter-panel-close"));
+
+  chapterPanel.querySelector(".chapter-panel-body").innerHTML = data.verses.map(v => `
+    <div class="cv${v.verse === data.verse ? " cv-current" : ""}"><span class="cv-num">${v.verse}</span><span class="cv-text">${escapeHtml(v.text)}</span></div>
+  `).join("");
+
+  const current = chapterPanel.querySelector(".cv-current");
+  if (current) current.scrollIntoView({ block: "center" });
+
+  chapterPanel.querySelector(".chapter-panel-close").focus();
+}
+
+function closeChapterPanel() {
+  if (!chapterPanel) return;
+  const triggerBtn = chapterPanel._triggerBtn;
+  chapterPanel.remove();
+  chapterPanel = null;
+  chapterPanelToken++; // stale any in-flight fetch so it can't touch a null panel
+  document.body.classList.remove("panel-open");
+  if (triggerBtn && triggerBtn.isConnected) triggerBtn.focus();
 }
 </script>
 </body>

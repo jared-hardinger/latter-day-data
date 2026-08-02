@@ -47,6 +47,18 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 VALID_STATUSES = ("approved", "rejected")
 VALID_SOURCES = ("exact", "prefix", "phrase", "semantic", "manual")
 
+CHURCH_BASE_URL = "https://www.churchofjesuschrist.org/study/scriptures"
+
+
+def external_url(volume_url: str, book_url: str, chapter: int, verse: int) -> str:
+    """Deep link to one verse on churchofjesuschrist.org. The verse anchor is
+    `p{verse}` both as the `id` query param (which the site scrolls to) and as
+    the fragment."""
+    return (
+        f"{CHURCH_BASE_URL}/{volume_url}/{book_url}/{chapter}"
+        f"?lang=eng&id=p{verse}#p{verse}"
+    )
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS topics (
     id          INTEGER PRIMARY KEY,
@@ -544,6 +556,37 @@ def search(
         )
 
     return {"total": total, "results": results, "volume_counts": volume_counts}
+
+
+@app.get("/api/chapter")
+def get_chapter(verse_id: int, fts_db=Depends(get_fts_db)):
+    subject = fts_db.execute(
+        """SELECT book_id, book, chapter, verse, volume, volume_url, book_url
+           FROM v_verses WHERE id = ?""",
+        (verse_id,),
+    ).fetchone()
+    if subject is None:
+        raise HTTPException(404, "Verse not found")
+    rows = fts_db.execute(
+        "SELECT id, verse, text FROM v_verses WHERE book_id = ? AND chapter = ? ORDER BY verse",
+        (subject["book_id"], subject["chapter"]),
+    ).fetchall()
+    return {
+        "reference": f"{subject['book']} {subject['chapter']}",
+        "book": subject["book"],
+        "chapter": subject["chapter"],
+        "volume": subject["volume"],
+        "verse_id": verse_id,
+        "verse": subject["verse"],
+        "external_url": external_url(
+            subject["volume_url"], subject["book_url"],
+            subject["chapter"], subject["verse"],
+        ),
+        "verses": [
+            {"verse_id": r["id"], "verse": r["verse"], "text": r["text"]}
+            for r in rows
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

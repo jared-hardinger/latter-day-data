@@ -60,6 +60,19 @@ def _find_test_verse() -> sqlite3.Row:
 _TEST_VERSE = _find_test_verse()
 
 
+def _verse_id_for(book: str, chapter: int, verse: int) -> int:
+    conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT id FROM v_verses WHERE book = ? AND chapter = ? AND verse = ?",
+            (book, chapter, verse),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, f"expected {book} {chapter}:{verse} to exist"
+    return row[0]
+
+
 @pytest.fixture()
 def paths(tmp_path, monkeypatch):
     guide_db_path = str(tmp_path / "guide.db")
@@ -508,3 +521,91 @@ def test_search_volume_id_with_topic_id_status_in_topic(client):
     data = resp.json()
     result = next(r for r in data["results"] if r["verse_id"] == ot_money_verse_id)
     assert result["status_in_topic"] == "approved"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/chapter
+# ---------------------------------------------------------------------------
+
+
+def test_get_chapter_returns_whole_chapter_in_order(client):
+    verse_id = _verse_id_for("Jacob", 2, 18)
+    resp = client.get("/api/chapter", params={"verse_id": verse_id})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reference"] == "Jacob 2"
+    assert data["verse"] == 18
+    assert data["verse_id"] == verse_id
+    verses = data["verses"]
+    assert [v["verse"] for v in verses] == sorted(v["verse"] for v in verses)
+    assert verses[0]["verse"] == 1
+
+
+def test_get_chapter_verse_count_matches_real_chapter(client):
+    verse_id = _verse_id_for("Jacob", 2, 18)
+    conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
+    try:
+        expected = conn.execute(
+            "SELECT COUNT(*) FROM v_verses WHERE book = 'Jacob' AND chapter = 2"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    resp = client.get("/api/chapter", params={"verse_id": verse_id})
+    assert len(resp.json()["verses"]) == expected
+
+
+def test_get_chapter_external_url_book_of_mormon(client):
+    verse_id = _verse_id_for("Jacob", 2, 18)
+    resp = client.get("/api/chapter", params={"verse_id": verse_id})
+    assert resp.json()["external_url"] == (
+        "https://www.churchofjesuschrist.org/study/scriptures/bofm/jacob/2"
+        "?lang=eng&id=p18#p18"
+    )
+
+
+def test_get_chapter_external_url_doctrine_and_covenants(client):
+    verse_id = _verse_id_for("Doctrine and Covenants", 4, 2)
+    resp = client.get("/api/chapter", params={"verse_id": verse_id})
+    assert resp.json()["external_url"] == (
+        "https://www.churchofjesuschrist.org/study/scriptures/dc-testament/dc/4"
+        "?lang=eng&id=p2#p2"
+    )
+
+
+def test_get_chapter_external_url_joseph_smith_history(client):
+    verse_id = _verse_id_for("Joseph Smith--History", 1, 17)
+    resp = client.get("/api/chapter", params={"verse_id": verse_id})
+    assert resp.json()["external_url"] == (
+        "https://www.churchofjesuschrist.org/study/scriptures/pgp/js-h/1"
+        "?lang=eng&id=p17#p17"
+    )
+
+
+def test_get_chapter_unknown_verse_id_404(client):
+    resp = client.get("/api/chapter", params={"verse_id": 999999})
+    assert resp.status_code == 404
+
+
+def test_get_chapter_missing_verse_id_422(client):
+    resp = client.get("/api/chapter")
+    assert resp.status_code == 422
+
+
+def test_books_and_volumes_all_have_lds_url_slugs():
+    conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
+    try:
+        missing_volumes = conn.execute(
+            "SELECT COUNT(*) FROM volumes WHERE lds_url IS NULL OR lds_url = ''"
+        ).fetchone()[0]
+        missing_books = conn.execute(
+            "SELECT COUNT(*) FROM books WHERE lds_url IS NULL OR lds_url = ''"
+        ).fetchone()[0]
+        volume_count = conn.execute("SELECT COUNT(*) FROM volumes").fetchone()[0]
+        book_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+    finally:
+        conn.close()
+    assert missing_volumes == 0
+    assert missing_books == 0
+    assert volume_count == 5
+    assert book_count == 87

@@ -49,15 +49,17 @@ EXPECTED_DC_SECTIONS = 138
 
 SCHEMA = """
 CREATE TABLE volumes (
-    id   INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
+    id      INTEGER PRIMARY KEY,
+    name    TEXT NOT NULL UNIQUE,
+    lds_url TEXT NOT NULL          -- churchofjesuschrist.org volume slug
 );
 
 CREATE TABLE books (
     id        INTEGER PRIMARY KEY,
     volume_id INTEGER NOT NULL REFERENCES volumes(id),
     name      TEXT NOT NULL UNIQUE,
-    position  INTEGER NOT NULL,          -- canonical order within the volume
+    position  INTEGER NOT NULL,    -- canonical order within the volume
+    lds_url   TEXT NOT NULL,       -- churchofjesuschrist.org book slug
     UNIQUE (volume_id, position)
 );
 
@@ -72,7 +74,8 @@ CREATE TABLE verses (
 
 CREATE VIEW v_verses AS
     SELECT v.id, vol.id AS volume_id, vol.name AS volume,
-           b.id AS book_id, b.name AS book,
+           vol.lds_url AS volume_url,
+           b.id AS book_id, b.name AS book, b.lds_url AS book_url,
            v.chapter, v.verse, v.text
     FROM verses v
     JOIN books b ON b.id = v.book_id
@@ -103,24 +106,24 @@ def build(rows):
     db = sqlite3.connect(tmp_path)
     db.executescript(SCHEMA)
 
-    volumes = {}   # id -> name
-    books = {}     # id -> (volume_id, name)
+    volumes = {}   # id -> (name, lds_url)
+    books = {}     # id -> (volume_id, name, position, lds_url)
     positions = {} # volume_id -> next position
     for r in rows:
         vid, bid = int(r["volume_id"]), int(r["book_id"])
         if vid not in volumes:
-            volumes[vid] = r["volume_title"]
+            volumes[vid] = (r["volume_title"], r["volume_lds_url"])
         if bid not in books:
             positions[vid] = positions.get(vid, 0) + 1
-            books[bid] = (vid, r["book_title"], positions[vid])
+            books[bid] = (vid, r["book_title"], positions[vid], r["book_lds_url"])
 
     db.executemany(
-        "INSERT INTO volumes (id, name) VALUES (?, ?)",
-        sorted(volumes.items()),
+        "INSERT INTO volumes (id, name, lds_url) VALUES (?, ?, ?)",
+        [(vid, name, url) for vid, (name, url) in sorted(volumes.items())],
     )
     db.executemany(
-        "INSERT INTO books (id, volume_id, name, position) VALUES (?, ?, ?, ?)",
-        [(bid, vid, name, pos) for bid, (vid, name, pos) in sorted(books.items())],
+        "INSERT INTO books (id, volume_id, name, position, lds_url) VALUES (?, ?, ?, ?, ?)",
+        [(bid, vid, name, pos, url) for bid, (vid, name, pos, url) in sorted(books.items())],
     )
     db.executemany(
         "INSERT INTO verses (id, book_id, chapter, verse, text) VALUES (?, ?, ?, ?, ?)",
@@ -175,6 +178,10 @@ def sanity_check(db):
         ).fetchone()[0],
         EXPECTED_DC_SECTIONS,
     )
+    expect("volumes missing a slug",
+           db.execute("SELECT COUNT(*) FROM volumes WHERE lds_url IS NULL OR lds_url = ''").fetchone()[0], 0)
+    expect("books missing a slug",
+           db.execute("SELECT COUNT(*) FROM books WHERE lds_url IS NULL OR lds_url = ''").fetchone()[0], 0)
 
     if failures:
         for f in failures:
