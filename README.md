@@ -65,7 +65,9 @@ It copies `scriptures.db` and adds `verses_fts`, an FTS5 index over the verse
 text. The file is gitignored — delete it any time; the rebuild takes under a
 second.
 
-Query with `MATCH` and sort by `rank` (BM25 relevance, best match first):
+Query with `MATCH` and sort by `rank` (BM25 relevance, best match first) — or
+by `f.rowid` for canonical scripture order, since verse IDs are sequential by
+volume, book, chapter, verse:
 
 ```sql
 SELECT b.name, v.chapter, v.verse
@@ -161,6 +163,21 @@ rejecting a result doesn't move it). Curate's filter re-queries the server,
 so it isn't limited to whatever landed in the first page of results; Study's
 filter is a client-side filter over the verses already on screen. Both
 filters are session-only, clearing on tab switch, navigation, and reload.
+
+### Verse ordering
+
+Every list of verses in the app — Study tab, Curate results, the chapter
+context panel, and `guide_export.json` — reads in canonical scripture order:
+volume, then book, then chapter, then verse. Verse IDs in the scripture
+database are already assigned in exactly that sequence, so this is a plain
+`ORDER BY verse_id` everywhere, with no sort key to maintain.
+
+Curate search is included in that, which means results are **not** ranked by
+relevance. A search is capped at 50 matches, and the cap applies to canonical
+order, so a broad query like `faith` (thousands of matches) fills the page
+from Genesis and never reaches the Book of Mormon. Use the volume strip to
+get there: clicking a volume re-queries the server, so each volume gets its
+own 50 in canonical order.
 
 ### AI writing helpers
 

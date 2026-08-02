@@ -477,6 +477,36 @@ def test_search_volume_id_filters_results_and_total(client):
         conn.close()
 
 
+def test_search_results_in_canonical_order(client):
+    # Verse IDs are sequential by volume, book, chapter, verse, so ascending
+    # verse_id *is* canonical scripture order.
+    for params in (
+        {"q": "money", "mode": "prefix"},
+        {"q": "money", "mode": "prefix", "volume_id": 3},
+    ):
+        data = client.get("/api/search", params=params).json()
+        ids = [r["verse_id"] for r in data["results"]]
+        assert len(ids) > 1
+        assert ids == sorted(ids), params
+
+
+def test_search_limit_truncates_from_front_of_canon(client):
+    # The limit applies to canonical order, not relevance: a broad query fills
+    # the page from the earliest volume and stops. The volume filter is the
+    # only way to reach later volumes.
+    data = client.get(
+        "/api/search", params={"q": "money", "mode": "prefix", "limit": 5}
+    ).json()
+    assert data["total"] == 177
+    assert [r["reference"] for r in data["results"]] == [
+        "Genesis 17:12",
+        "Genesis 17:13",
+        "Genesis 17:23",
+        "Genesis 17:27",
+        "Genesis 23:9",
+    ]
+
+
 def test_search_volume_counts_identical_with_and_without_volume_id(client):
     unfiltered = client.get("/api/search", params={"q": "money", "mode": "prefix"}).json()
     filtered = client.get(

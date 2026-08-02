@@ -484,6 +484,10 @@ def search(
         if volume is None:
             raise HTTPException(404, "Volume not found")
 
+    # Results come back in canonical scripture order, not BM25 rank: verse IDs
+    # are sequential by volume, book, chapter, verse. Broad queries therefore
+    # fill the limit from the front of the canon — the volume filter is how you
+    # reach the rest.
     try:
         if volume_id is not None:
             rows = fts_db.execute(
@@ -493,7 +497,7 @@ def search(
                 FROM verses_fts f
                 JOIN v_verses vv ON vv.id = f.rowid
                 WHERE verses_fts MATCH ? AND vv.volume_id = ?
-                ORDER BY rank
+                ORDER BY f.rowid
                 LIMIT ?
                 """,
                 (match_query, volume_id, limit),
@@ -505,7 +509,7 @@ def search(
                        highlight(verses_fts, 0, '<mark>', '</mark>') AS highlighted
                 FROM verses_fts f
                 WHERE verses_fts MATCH ?
-                ORDER BY rank
+                ORDER BY f.rowid
                 LIMIT ?
                 """,
                 (match_query, limit),

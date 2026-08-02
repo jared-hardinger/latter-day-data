@@ -129,7 +129,11 @@ All endpoints under `/api`, JSON in/out. Static UI served at `/`.
   prayeth).
 - **exact**: each term becomes `"term"`, AND-ed.
 - **phrase**: the whole query as one quoted phrase.
-- Results ordered by FTS5 `rank`, joined with book/chapter/verse/reference.
+- Results ordered by `verse_id` — canonical scripture order, matching every
+  other verse list in the app — joined with book/chapter/verse/reference.
+  Because the limit is applied to that order rather than to BM25 rank, a
+  broad query fills the page from the front of the canon; the volume filter
+  is how you reach later volumes.
   Use FTS5 `highlight()` to return text with `<mark>…</mark>` around
   matches. Include total match count alongside the limited results.
 - When `topic_id` is given, each result carries
