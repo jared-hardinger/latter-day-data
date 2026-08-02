@@ -380,14 +380,15 @@ def test_note_fill_generates_with_no_prompt_and_writes_nothing(client, monkeypat
     topic_id = create_topic(client, "Faith", "Trusting God before the outcome is visible.")
     verse_id = _TEST_VERSE["id"]
     approve_resp = client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": verse_id, "status": "approved", "source": "manual"},
+        f"/api/topics/{topic_id}/entries",
+        json={"start_verse_id": verse_id, "status": "approved", "source": "manual"},
     )
-    assert approve_resp.status_code == 200
+    assert approve_resp.status_code == 201
+    entry_id = approve_resp.json()["entry_id"]
 
     mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_NOTE_FILL)
     resp = client.post(
-        f"/api/ai/topics/{topic_id}/verses/{verse_id}/note/fill", json={}
+        f"/api/ai/topics/{topic_id}/entries/{entry_id}/note/fill", json={}
     )
     assert resp.status_code == 200
     assert resp.json()["note"] == DEFAULT_NOTE_FILL.note
@@ -399,8 +400,8 @@ def test_note_fill_generates_with_no_prompt_and_writes_nothing(client, monkeypat
     assert "no words" in user_text.lower()
 
     topic = client.get(f"/api/topics/{topic_id}").json()
-    linked_verse = next(v for v in topic["verses"] if v["verse_id"] == verse_id)
-    assert linked_verse["note"] == ""
+    linked_entry = next(e for e in topic["entries"] if e["entry_id"] == entry_id)
+    assert linked_entry["note"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -411,13 +412,13 @@ def test_note_fill_generates_with_no_prompt_and_writes_nothing(client, monkeypat
 def test_note_fill_passes_neighbours_and_marks_one_subject(client, monkeypatch):
     topic_id = create_topic(client, "Faith")
     verse_id = _TEST_VERSE["id"]
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": verse_id, "status": "approved", "source": "manual"},
-    )
+    entry_id = client.post(
+        f"/api/topics/{topic_id}/entries",
+        json={"start_verse_id": verse_id, "status": "approved", "source": "manual"},
+    ).json()["entry_id"]
 
     mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_NOTE_FILL)
-    resp = client.post(f"/api/ai/topics/{topic_id}/verses/{verse_id}/note/fill", json={})
+    resp = client.post(f"/api/ai/topics/{topic_id}/entries/{entry_id}/note/fill", json={})
     assert resp.status_code == 200
 
     system_text = mock_client.messages.parse.call_args.kwargs["system"][0]["text"]
@@ -437,14 +438,14 @@ def test_note_fill_passes_neighbours_and_marks_one_subject(client, monkeypatch):
 def test_note_is_capped_at_300_chars(client, monkeypatch):
     topic_id = create_topic(client, "Faith")
     verse_id = _TEST_VERSE["id"]
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": verse_id, "status": "approved", "source": "manual"},
-    )
+    entry_id = client.post(
+        f"/api/topics/{topic_id}/entries",
+        json={"start_verse_id": verse_id, "status": "approved", "source": "manual"},
+    ).json()["entry_id"]
     fill = ai._NoteFill(note="x" * 400, reason="reason")
     mock_anthropic_returning(monkeypatch, fill)
 
-    resp = client.post(f"/api/ai/topics/{topic_id}/verses/{verse_id}/note/fill", json={})
+    resp = client.post(f"/api/ai/topics/{topic_id}/entries/{entry_id}/note/fill", json={})
     assert resp.status_code == 200
     assert len(resp.json()["note"]) <= 300
 
@@ -452,14 +453,14 @@ def test_note_is_capped_at_300_chars(client, monkeypatch):
 def test_blank_note_returns_502(client, monkeypatch):
     topic_id = create_topic(client, "Faith")
     verse_id = _TEST_VERSE["id"]
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": verse_id, "status": "approved", "source": "manual"},
-    )
+    entry_id = client.post(
+        f"/api/topics/{topic_id}/entries",
+        json={"start_verse_id": verse_id, "status": "approved", "source": "manual"},
+    ).json()["entry_id"]
     fill = ai._NoteFill(note="   ", reason="reason")
     mock_anthropic_returning(monkeypatch, fill)
 
-    resp = client.post(f"/api/ai/topics/{topic_id}/verses/{verse_id}/note/fill", json={})
+    resp = client.post(f"/api/ai/topics/{topic_id}/entries/{entry_id}/note/fill", json={})
     assert resp.status_code == 502
 
 
@@ -471,17 +472,17 @@ def test_blank_note_returns_502(client, monkeypatch):
 def test_note_fill_unknown_topic_returns_404_without_calling_sdk(client, monkeypatch):
     mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_NOTE_FILL)
     resp = client.post(
-        f"/api/ai/topics/999999/verses/{_TEST_VERSE['id']}/note/fill", json={}
+        "/api/ai/topics/999999/entries/1/note/fill", json={}
     )
     assert resp.status_code == 404
     mock_client.messages.parse.assert_not_called()
 
 
-def test_note_fill_unknown_verse_returns_400_without_calling_sdk(client, monkeypatch):
+def test_note_fill_unknown_entry_returns_400_without_calling_sdk(client, monkeypatch):
     topic_id = create_topic(client, "Faith")
     mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_NOTE_FILL)
     resp = client.post(
-        f"/api/ai/topics/{topic_id}/verses/99999999/note/fill", json={}
+        f"/api/ai/topics/{topic_id}/entries/99999999/note/fill", json={}
     )
     assert resp.status_code == 400
     mock_client.messages.parse.assert_not_called()
@@ -518,8 +519,8 @@ def test_polish_returns_unsaved_description_and_writes_nothing(client, paths, mo
     topic_id = create_topic(client, "Reluctant Prayer", "prayer when you don't want to")
     verse_id = _TEST_VERSE["id"]
     client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": verse_id, "status": "approved", "source": "manual"},
+        f"/api/topics/{topic_id}/entries",
+        json={"start_verse_id": verse_id, "status": "approved", "source": "manual"},
     )
     before_count = topic_count(client)
     with open(paths["export"]) as f:
@@ -580,9 +581,9 @@ def test_polish_context_reaches_the_model(client, monkeypatch):
     create_topic(client, "Adversity", "Enduring hard things.")
     verse_id = _TEST_VERSE["id"]
     client.post(
-        f"/api/topics/{topic_id}/verses",
+        f"/api/topics/{topic_id}/entries",
         json={
-            "verse_id": verse_id,
+            "start_verse_id": verse_id,
             "status": "approved",
             "source": "manual",
             "note": "the counsel comes before the doing, not after it",
@@ -612,8 +613,8 @@ def test_polish_caps_approved_verses_at_40(client, monkeypatch):
     assert len(verse_ids) == 45
     for vid in verse_ids:
         client.post(
-            f"/api/topics/{topic_id}/verses",
-            json={"verse_id": vid, "status": "approved", "source": "manual"},
+            f"/api/topics/{topic_id}/entries",
+            json={"start_verse_id": vid, "status": "approved", "source": "manual"},
         )
 
     mock_client = mock_anthropic_returning(monkeypatch, DEFAULT_POLISH)

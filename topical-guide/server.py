@@ -47,6 +47,10 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 VALID_STATUSES = ("approved", "rejected")
 VALID_SOURCES = ("exact", "prefix", "phrase", "semantic", "manual")
 
+# A guard against a fat-fingered selection swallowing a whole chapter, not a
+# theological position.
+MAX_PASSAGE_VERSES = 40
+
 CHURCH_BASE_URL = "https://www.churchofjesuschrist.org/study/scriptures"
 
 
@@ -67,15 +71,24 @@ CREATE TABLE IF NOT EXISTS topics (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS topic_verses (
+CREATE TABLE IF NOT EXISTS topic_entries (
+    id        INTEGER PRIMARY KEY,
     topic_id  INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
-    verse_id  INTEGER NOT NULL,
     status    TEXT NOT NULL CHECK (status IN ('approved', 'rejected')),
     note      TEXT NOT NULL DEFAULT '',
     source    TEXT NOT NULL CHECK (source IN ('exact','prefix','phrase','semantic','manual')),
-    added_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    added_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS topic_verses (
+    topic_id  INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    entry_id  INTEGER NOT NULL REFERENCES topic_entries(id) ON DELETE CASCADE,
+    verse_id  INTEGER NOT NULL,
     PRIMARY KEY (topic_id, verse_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_topic_verses_entry ON topic_verses(entry_id);
+CREATE INDEX IF NOT EXISTS idx_topic_entries_topic ON topic_entries(topic_id);
 """
 
 
@@ -89,9 +102,43 @@ def check_fts_db():
         sys.exit(1)
 
 
+def needs_entry_migration(conn) -> bool:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(topic_verses)")}
+    return bool(cols) and "status" in cols
+
+
+def migrate_to_entries(conn):
+    """Old shape: one topic_verses row per verse, carrying status/note/source.
+    New shape: topic_entries holds those, topic_verses maps entries to verses.
+    Every pre-existing row becomes a singleton entry — grouping is explicit, so
+    the migration never infers a passage from verses that happen to adjoin."""
+    conn.execute("PRAGMA foreign_keys = OFF")
+    with conn:
+        conn.execute("ALTER TABLE topic_verses RENAME TO topic_verses_old")
+        conn.executescript(SCHEMA)
+        for row in conn.execute(
+            """SELECT topic_id, verse_id, status, note, source, added_at
+               FROM topic_verses_old ORDER BY topic_id, verse_id"""
+        ).fetchall():
+            cur = conn.execute(
+                """INSERT INTO topic_entries (topic_id, status, note, source, added_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (row["topic_id"], row["status"], row["note"], row["source"], row["added_at"]),
+            )
+            conn.execute(
+                "INSERT INTO topic_verses (topic_id, entry_id, verse_id) VALUES (?, ?, ?)",
+                (row["topic_id"], cur.lastrowid, row["verse_id"]),
+            )
+        conn.execute("DROP TABLE topic_verses_old")
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
 def init_guide_db():
     conn = sqlite3.connect(GUIDE_DB_PATH)
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    if needs_entry_migration(conn):
+        migrate_to_entries(conn)
     conn.executescript(SCHEMA)
     conn.commit()
     conn.close()
@@ -139,6 +186,81 @@ def reference_for(fts_db: sqlite3.Connection, verse_id: int) -> Optional[str]:
     return f"{row['book']} {row['chapter']}:{row['verse']}"
 
 
+def entry_reference(fts_db: sqlite3.Connection, verse_ids: list, dash="–") -> Optional[str]:
+    """'3 Nephi 18:15' or '3 Nephi 18:15–16'. verse_ids must be one contiguous
+    range within one chapter — the entry invariant guarantees it."""
+    first = fts_db.execute(
+        "SELECT book, chapter, verse FROM v_verses WHERE id = ?", (verse_ids[0],)
+    ).fetchone()
+    if first is None:
+        return None
+    base = f"{first['book']} {first['chapter']}:{first['verse']}"
+    if len(verse_ids) == 1:
+        return base
+    last = fts_db.execute(
+        "SELECT verse FROM v_verses WHERE id = ?", (verse_ids[-1],)
+    ).fetchone()
+    return f"{base}{dash}{last['verse']}"
+
+
+def expand_range(fts_db: sqlite3.Connection, start_verse_id: int, end_verse_id: int) -> list:
+    """Validate a requested range and return its verse ids in order."""
+    if end_verse_id < start_verse_id:
+        start_verse_id, end_verse_id = end_verse_id, start_verse_id
+    rows = fts_db.execute(
+        "SELECT id, book_id, chapter FROM v_verses WHERE id IN (?, ?)",
+        (start_verse_id, end_verse_id),
+    ).fetchall()
+    if len(rows) < (1 if start_verse_id == end_verse_id else 2):
+        raise HTTPException(400, "Verse does not exist")
+    if rows[0]["book_id"] != rows[-1]["book_id"] or rows[0]["chapter"] != rows[-1]["chapter"]:
+        raise HTTPException(400, "A passage must stay within one chapter")
+    ids = [
+        r["id"] for r in fts_db.execute(
+            "SELECT id FROM v_verses WHERE id BETWEEN ? AND ? ORDER BY id",
+            (start_verse_id, end_verse_id),
+        )
+    ]
+    if len(ids) > MAX_PASSAGE_VERSES:
+        raise HTTPException(422, f"A passage is limited to {MAX_PASSAGE_VERSES} verses")
+    return ids
+
+
+def _entry_verse_ids(guide_db: sqlite3.Connection, entry_id: int) -> list:
+    return [
+        r[0] for r in guide_db.execute(
+            "SELECT verse_id FROM topic_verses WHERE entry_id = ? ORDER BY verse_id",
+            (entry_id,),
+        )
+    ]
+
+
+def entry_dict(guide_db: sqlite3.Connection, fts_db: sqlite3.Connection, entry_id: int) -> dict:
+    entry = guide_db.execute(
+        "SELECT id, status, note, source FROM topic_entries WHERE id = ?", (entry_id,)
+    ).fetchone()
+    verse_ids = _entry_verse_ids(guide_db, entry_id)
+    verses = []
+    volume = volume_id = None
+    for vid in verse_ids:
+        row = fts_db.execute(
+            "SELECT volume, volume_id, verse, text FROM v_verses WHERE id = ?", (vid,)
+        ).fetchone()
+        verses.append({"verse_id": vid, "verse": row["verse"], "text": row["text"]})
+        volume, volume_id = row["volume"], row["volume_id"]
+    return {
+        "entry_id": entry["id"],
+        "reference": entry_reference(fts_db, verse_ids),
+        "verse_ids": verse_ids,
+        "verses": verses,
+        "volume": volume,
+        "volume_id": volume_id,
+        "status": entry["status"],
+        "source": entry["source"],
+        "note": entry["note"],
+    }
+
+
 def write_export(guide_db: sqlite3.Connection):
     """Rewrite guide_export.json with deterministic ordering so git history
     shows readable diffs. Reference text (not full verse text) is looked up
@@ -154,20 +276,26 @@ def write_export(guide_db: sqlite3.Connection):
         ).fetchall()
         export = []
         for t in topics:
-            links = guide_db.execute(
-                """SELECT verse_id, status, source, note FROM topic_verses
-                   WHERE topic_id = ? ORDER BY verse_id""",
+            entries = guide_db.execute(
+                """SELECT te.id AS entry_id, te.status, te.source, te.note,
+                          (SELECT MIN(verse_id) FROM topic_verses WHERE entry_id = te.id) AS min_verse_id
+                   FROM topic_entries te
+                   WHERE te.topic_id = ?
+                   ORDER BY min_verse_id""",
                 (t["id"],),
             ).fetchall()
-            verses = [
-                {
-                    "reference": reference_for(fts_db, link["verse_id"]),
-                    "status": link["status"],
-                    "source": link["source"],
-                    "note": link["note"],
-                }
-                for link in links
-            ]
+            verses = []
+            for e in entries:
+                verse_ids = _entry_verse_ids(guide_db, e["entry_id"])
+                verses.append(
+                    {
+                        "reference": entry_reference(fts_db, verse_ids, dash="-"),
+                        "verse_count": len(verse_ids),
+                        "status": e["status"],
+                        "source": e["source"],
+                        "note": e["note"],
+                    }
+                )
             export.append(
                 {
                     "name": t["name"],
@@ -211,9 +339,9 @@ def list_topics(guide_db=Depends(get_guide_db)):
     rows = guide_db.execute(
         """
         SELECT t.id, t.name, t.description,
-               COUNT(CASE WHEN tv.status = 'approved' THEN 1 END) AS approved_count
+               COUNT(CASE WHEN te.status = 'approved' THEN 1 END) AS approved_count
         FROM topics t
-        LEFT JOIN topic_verses tv ON tv.topic_id = t.id
+        LEFT JOIN topic_entries te ON te.topic_id = t.id
         GROUP BY t.id
         ORDER BY t.name
         """
@@ -259,7 +387,7 @@ def update_topic(topic_id: int, body: TopicUpdate, guide_db=Depends(get_guide_db
         raise HTTPException(409, f"Topic '{name}' already exists")
     write_export(guide_db)
     approved_count = guide_db.execute(
-        "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND status = 'approved'",
+        "SELECT COUNT(*) FROM topic_entries WHERE topic_id = ? AND status = 'approved'",
         (topic_id,),
     ).fetchone()[0]
     row = guide_db.execute(
@@ -290,47 +418,42 @@ def get_topic(
     ).fetchone()
     if topic is None:
         raise HTTPException(404, "Topic not found")
-    approved = guide_db.execute(
-        """SELECT verse_id, note, source FROM topic_verses
-           WHERE topic_id = ? AND status = 'approved' ORDER BY verse_id""",
-        (topic_id,),
-    ).fetchall()
+    approved_entry_ids = [
+        r[0] for r in guide_db.execute(
+            """SELECT te.id
+               FROM topic_entries te
+               WHERE te.topic_id = ? AND te.status = 'approved'
+               ORDER BY (SELECT MIN(verse_id) FROM topic_verses WHERE entry_id = te.id)""",
+            (topic_id,),
+        )
+    ]
     rejected_count = guide_db.execute(
-        "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND status = 'rejected'",
+        "SELECT COUNT(*) FROM topic_entries WHERE topic_id = ? AND status = 'rejected'",
         (topic_id,),
     ).fetchone()[0]
     note_count = guide_db.execute(
-        "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND note != ''",
+        "SELECT COUNT(*) FROM topic_entries WHERE topic_id = ? AND note != ''",
         (topic_id,),
     ).fetchone()[0]
     volume_counts = {
         v["id"]: {"volume_id": v["id"], "volume": v["name"], "count": 0}
         for v in fts_db.execute("SELECT id, name FROM volumes ORDER BY id").fetchall()
     }
-    verses = []
-    for link in approved:
-        row = fts_db.execute(
-            "SELECT volume, volume_id, book, chapter, verse, text FROM v_verses WHERE id = ?",
-            (link["verse_id"],),
-        ).fetchone()
-        verses.append(
-            {
-                "verse_id": link["verse_id"],
-                "volume": row["volume"],
-                "volume_id": row["volume_id"],
-                "reference": f"{row['book']} {row['chapter']}:{row['verse']}",
-                "text": row["text"],
-                "note": link["note"],
-                "source": link["source"],
-            }
-        )
-        volume_counts[row["volume_id"]]["count"] += 1
+    entries = []
+    verse_count = 0
+    for entry_id in approved_entry_ids:
+        entry = entry_dict(guide_db, fts_db, entry_id)
+        entries.append(entry)
+        verse_count += len(entry["verse_ids"])
+        volume_counts[entry["volume_id"]]["count"] += 1
     return {
         "id": topic["id"],
         "name": topic["name"],
         "description": topic["description"],
-        "verses": verses,
+        "entries": entries,
         "volume_counts": list(volume_counts.values()),
+        "passage_count": len(entries),
+        "verse_count": verse_count,
         "rejected_count": rejected_count,
         "note_count": note_count,
     }
@@ -341,22 +464,23 @@ def get_topic(
 # ---------------------------------------------------------------------------
 
 
-class VerseUpsert(BaseModel):
-    verse_id: int
+class EntryCreate(BaseModel):
+    start_verse_id: int
+    end_verse_id: Optional[int] = None
     status: Literal["approved", "rejected"]
     source: Literal["exact", "prefix", "phrase", "semantic", "manual"]
     note: Optional[str] = None
 
 
-class VerseUpdate(BaseModel):
+class EntryUpdate(BaseModel):
     status: Optional[Literal["approved", "rejected"]] = None
     note: Optional[str] = None
 
 
-@app.post("/api/topics/{topic_id}/verses")
-def upsert_verse(
+@app.post("/api/topics/{topic_id}/entries", status_code=201)
+def create_entry(
     topic_id: int,
-    body: VerseUpsert,
+    body: EntryCreate,
     guide_db=Depends(get_guide_db),
     fts_db=Depends(get_fts_db),
 ):
@@ -365,71 +489,106 @@ def upsert_verse(
     ).fetchone()
     if topic is None:
         raise HTTPException(404, "Topic not found")
-    verse = fts_db.execute(
-        "SELECT id FROM verses WHERE id = ?", (body.verse_id,)
-    ).fetchone()
-    if verse is None:
-        raise HTTPException(400, f"Verse {body.verse_id} does not exist")
 
-    # Re-posting to change status (e.g. reject -> approve) must not silently
-    # blow away a note the user already wrote, so only overwrite it when the
-    # caller explicitly supplied one.
-    existing = guide_db.execute(
-        "SELECT note FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
-        (topic_id, body.verse_id),
-    ).fetchone()
-    note = body.note if body.note is not None else (existing["note"] if existing else "")
+    end_verse_id = body.end_verse_id if body.end_verse_id is not None else body.start_verse_id
+    requested_ids = expand_range(fts_db, body.start_verse_id, end_verse_id)
 
-    guide_db.execute(
-        """
-        INSERT INTO topic_verses (topic_id, verse_id, status, source, note)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (topic_id, verse_id) DO UPDATE SET
-            status = excluded.status,
-            source = excluded.source,
-            note = excluded.note
-        """,
-        (topic_id, body.verse_id, body.status, body.source, note),
+    placeholders = ",".join("?" * len(requested_ids))
+    overlapping_entry_ids = [
+        r[0] for r in guide_db.execute(
+            f"""SELECT DISTINCT entry_id FROM topic_verses
+                WHERE topic_id = ? AND verse_id IN ({placeholders})""",
+            (topic_id, *requested_ids),
+        )
+    ]
+
+    # Overlapping approved entries contribute all their verses — even where
+    # they fall outside the requested range — so adding 16-18 over an
+    # existing 15-16 produces one entry 15-18, not 16-18 plus an orphaned 15.
+    # Overlapping rejected entries are always singletons (see the status
+    # invariant on PATCH below) and contribute nothing beyond the verse
+    # already in the requested range, so they are simply dropped.
+    union_ids = set(requested_ids)
+    absorbed_notes = []  # (min_verse_id, note) for ordering absorbed notes
+    for entry_id in overlapping_entry_ids:
+        entry = guide_db.execute(
+            "SELECT status, note FROM topic_entries WHERE id = ?", (entry_id,)
+        ).fetchone()
+        entry_verse_ids = _entry_verse_ids(guide_db, entry_id)
+        if entry["status"] == "approved":
+            union_ids.update(entry_verse_ids)
+            if entry["note"]:
+                absorbed_notes.append((entry_verse_ids[0], entry["note"]))
+
+    final_ids = expand_range(fts_db, min(union_ids), max(union_ids))
+
+    status = body.status
+    if len(final_ids) > 1 and status == "rejected":
+        raise HTTPException(422, "A passage of more than one verse must be approved.")
+
+    seen_notes = set()
+    notes_in_order = []
+    for _, note in sorted(absorbed_notes, key=lambda pair: pair[0]):
+        if note and note not in seen_notes:
+            seen_notes.add(note)
+            notes_in_order.append(note)
+    if body.note:
+        notes_in_order.append(body.note)
+    merged_note = "\n\n".join(notes_in_order)
+
+    for entry_id in overlapping_entry_ids:
+        guide_db.execute("DELETE FROM topic_entries WHERE id = ?", (entry_id,))
+
+    cur = guide_db.execute(
+        "INSERT INTO topic_entries (topic_id, status, note, source) VALUES (?, ?, ?, ?)",
+        (topic_id, status, merged_note, body.source),
+    )
+    new_entry_id = cur.lastrowid
+    guide_db.executemany(
+        "INSERT INTO topic_verses (topic_id, entry_id, verse_id) VALUES (?, ?, ?)",
+        [(topic_id, new_entry_id, vid) for vid in final_ids],
     )
     guide_db.commit()
     write_export(guide_db)
-    row = guide_db.execute(
-        "SELECT * FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
-        (topic_id, body.verse_id),
-    ).fetchone()
-    return dict(row)
+    return entry_dict(guide_db, fts_db, new_entry_id)
 
 
-@app.patch("/api/topics/{topic_id}/verses/{verse_id}")
-def update_verse(
-    topic_id: int, verse_id: int, body: VerseUpdate, guide_db=Depends(get_guide_db)
+@app.patch("/api/topics/{topic_id}/entries/{entry_id}")
+def update_entry(
+    topic_id: int,
+    entry_id: int,
+    body: EntryUpdate,
+    guide_db=Depends(get_guide_db),
+    fts_db=Depends(get_fts_db),
 ):
     existing = guide_db.execute(
-        "SELECT * FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
-        (topic_id, verse_id),
+        "SELECT * FROM topic_entries WHERE id = ? AND topic_id = ?", (entry_id, topic_id)
     ).fetchone()
     if existing is None:
-        raise HTTPException(404, "Link not found")
+        raise HTTPException(404, "Entry not found")
     status = body.status if body.status is not None else existing["status"]
     note = body.note if body.note is not None else existing["note"]
+    if status == "rejected":
+        verse_count = guide_db.execute(
+            "SELECT COUNT(*) FROM topic_verses WHERE entry_id = ?", (entry_id,)
+        ).fetchone()[0]
+        if verse_count > 1:
+            raise HTTPException(
+                422, "A multi-verse passage can't be rejected; remove it instead."
+            )
     guide_db.execute(
-        "UPDATE topic_verses SET status = ?, note = ? WHERE topic_id = ? AND verse_id = ?",
-        (status, note, topic_id, verse_id),
+        "UPDATE topic_entries SET status = ?, note = ? WHERE id = ?",
+        (status, note, entry_id),
     )
     guide_db.commit()
     write_export(guide_db)
-    row = guide_db.execute(
-        "SELECT * FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
-        (topic_id, verse_id),
-    ).fetchone()
-    return dict(row)
+    return entry_dict(guide_db, fts_db, entry_id)
 
 
-@app.delete("/api/topics/{topic_id}/verses/{verse_id}", status_code=204)
-def delete_verse(topic_id: int, verse_id: int, guide_db=Depends(get_guide_db)):
+@app.delete("/api/topics/{topic_id}/entries/{entry_id}", status_code=204)
+def delete_entry(topic_id: int, entry_id: int, guide_db=Depends(get_guide_db)):
     guide_db.execute(
-        "DELETE FROM topic_verses WHERE topic_id = ? AND verse_id = ?",
-        (topic_id, verse_id),
+        "DELETE FROM topic_entries WHERE id = ? AND topic_id = ?", (entry_id, topic_id)
     )
     guide_db.commit()
     write_export(guide_db)
@@ -538,24 +697,39 @@ def search(
     total = counts_by_volume.get(volume_id, 0) if volume_id is not None else sum(counts_by_volume.values())
 
     status_map = {}
+    entry_map = {}
     if topic_id is not None and rows:
         verse_ids = [r["verse_id"] for r in rows]
         placeholders = ",".join("?" * len(verse_ids))
-        status_rows = guide_db.execute(
-            f"""SELECT verse_id, status FROM topic_verses
-                WHERE topic_id = ? AND verse_id IN ({placeholders})""",
+        link_rows = guide_db.execute(
+            f"""SELECT tv.verse_id, te.id AS entry_id, te.status
+                FROM topic_verses tv JOIN topic_entries te ON te.id = tv.entry_id
+                WHERE tv.topic_id = ? AND tv.verse_id IN ({placeholders})""",
             (topic_id, *verse_ids),
         ).fetchall()
-        status_map = {r["verse_id"]: r["status"] for r in status_rows}
+        for lr in link_rows:
+            status_map[lr["verse_id"]] = lr["status"]
+            entry_map[lr["verse_id"]] = lr["entry_id"]
 
     results = []
     for row in rows:
+        entry_id = entry_map.get(row["verse_id"])
+        entry_ref = None
+        if entry_id is not None:
+            # Only worth surfacing for an actual passage — a singleton entry's
+            # reference is identical to the verse's own, so the badge already
+            # says everything it would.
+            entry_verse_ids = _entry_verse_ids(guide_db, entry_id)
+            if len(entry_verse_ids) > 1:
+                entry_ref = entry_reference(fts_db, entry_verse_ids)
         results.append(
             {
                 "verse_id": row["verse_id"],
                 "reference": reference_for(fts_db, row["verse_id"]),
                 "highlighted": row["highlighted"],
                 "status_in_topic": status_map.get(row["verse_id"]),
+                "entry_id": entry_id,
+                "entry_reference": entry_ref,
             }
         )
 
@@ -563,7 +737,12 @@ def search(
 
 
 @app.get("/api/chapter")
-def get_chapter(verse_id: int, fts_db=Depends(get_fts_db)):
+def get_chapter(
+    verse_id: int,
+    topic_id: Optional[int] = None,
+    guide_db=Depends(get_guide_db),
+    fts_db=Depends(get_fts_db),
+):
     subject = fts_db.execute(
         """SELECT book_id, book, chapter, verse, volume, volume_url, book_url
            FROM v_verses WHERE id = ?""",
@@ -575,6 +754,20 @@ def get_chapter(verse_id: int, fts_db=Depends(get_fts_db)):
         "SELECT id, verse, text FROM v_verses WHERE book_id = ? AND chapter = ? ORDER BY verse",
         (subject["book_id"], subject["chapter"]),
     ).fetchall()
+
+    entry_by_verse = {}
+    if topic_id is not None:
+        chapter_verse_ids = [r["id"] for r in rows]
+        placeholders = ",".join("?" * len(chapter_verse_ids))
+        link_rows = guide_db.execute(
+            f"""SELECT tv.verse_id, tv.entry_id
+                FROM topic_verses tv JOIN topic_entries te ON te.id = tv.entry_id
+                WHERE tv.topic_id = ? AND te.status = 'approved'
+                AND tv.verse_id IN ({placeholders})""",
+            (topic_id, *chapter_verse_ids),
+        ).fetchall()
+        entry_by_verse = {r["verse_id"]: r["entry_id"] for r in link_rows}
+
     return {
         "reference": f"{subject['book']} {subject['chapter']}",
         "book": subject["book"],
@@ -587,7 +780,12 @@ def get_chapter(verse_id: int, fts_db=Depends(get_fts_db)):
             subject["chapter"], subject["verse"],
         ),
         "verses": [
-            {"verse_id": r["id"], "verse": r["verse"], "text": r["text"]}
+            {
+                "verse_id": r["id"],
+                "verse": r["verse"],
+                "text": r["text"],
+                "entry_id": entry_by_verse.get(r["id"]),
+            }
             for r in rows
         ],
     }
@@ -660,10 +858,10 @@ class NoteFillRequest(BaseModel):
     prompt: Optional[str] = None
 
 
-@app.post("/api/ai/topics/{topic_id}/verses/{verse_id}/note/fill")
+@app.post("/api/ai/topics/{topic_id}/entries/{entry_id}/note/fill")
 def fill_note(
     topic_id: int,
-    verse_id: int,
+    entry_id: int,
     body: NoteFillRequest,
     guide_db=Depends(get_guide_db),
     fts_db=Depends(get_fts_db),
@@ -676,11 +874,19 @@ def fill_note(
     if topic is None:
         raise HTTPException(404, "Topic not found")
 
-    verse = fts_db.execute(
-        "SELECT book, chapter, verse, text FROM v_verses WHERE id = ?", (verse_id,)
+    entry = guide_db.execute(
+        "SELECT id FROM topic_entries WHERE id = ? AND topic_id = ?", (entry_id, topic_id)
     ).fetchone()
-    if verse is None:
-        raise HTTPException(400, f"Verse {verse_id} does not exist")
+    if entry is None:
+        raise HTTPException(400, f"Entry {entry_id} does not exist")
+
+    entry_verse_ids = _entry_verse_ids(guide_db, entry_id)
+    first_verse = fts_db.execute(
+        "SELECT book, chapter, verse FROM v_verses WHERE id = ?", (entry_verse_ids[0],)
+    ).fetchone()
+    last_verse = fts_db.execute(
+        "SELECT verse FROM v_verses WHERE id = ?", (entry_verse_ids[-1],)
+    ).fetchone()
 
     prompt = (body.prompt or "").strip()
     if len(prompt) > feature.max_prompt_chars:
@@ -690,16 +896,19 @@ def fill_note(
         """SELECT verse, text FROM v_verses
            WHERE book = ? AND chapter = ? AND verse BETWEEN ? AND ?
            ORDER BY verse""",
-        (verse["book"], verse["chapter"], verse["verse"] - 2, verse["verse"] + 2),
+        (
+            first_verse["book"], first_verse["chapter"],
+            first_verse["verse"] - 2, last_verse["verse"] + 2,
+        ),
     ).fetchall()
 
     passage_lines = []
     for n in neighbours:
-        marker = ">>" if n["verse"] == verse["verse"] else "  "
+        marker = ">>" if first_verse["verse"] <= n["verse"] <= last_verse["verse"] else "  "
         passage_lines.append(
-            f"{marker} {verse['book']} {verse['chapter']}:{n['verse']}  {n['text']}"
+            f"{marker} {first_verse['book']} {first_verse['chapter']}:{n['verse']}  {n['text']}"
         )
-    passage_block = "Passage (the subject verse is marked >>):\n" + "\n".join(
+    passage_block = "Passage (the subject verses are marked >>):\n" + "\n".join(
         passage_lines
     )
 
@@ -773,32 +982,38 @@ def polish_description(
     this_block = f"Topic name: {topic['name']}\nCurrent description: {desc_line}"
 
     approved_count = guide_db.execute(
-        "SELECT COUNT(*) FROM topic_verses WHERE topic_id = ? AND status = 'approved'",
+        "SELECT COUNT(*) FROM topic_entries WHERE topic_id = ? AND status = 'approved'",
         (topic_id,),
     ).fetchone()[0]
-    links = guide_db.execute(
-        """SELECT verse_id, note FROM topic_verses
-           WHERE topic_id = ? AND status = 'approved' ORDER BY verse_id LIMIT 40""",
+    entries = guide_db.execute(
+        """SELECT te.id AS entry_id, te.note
+           FROM topic_entries te
+           WHERE te.topic_id = ? AND te.status = 'approved'
+           ORDER BY (SELECT MIN(verse_id) FROM topic_verses WHERE entry_id = te.id)
+           LIMIT 40""",
         (topic_id,),
     ).fetchall()
-    if links:
+    if entries:
         lines = []
-        for link in links:
-            row = fts_db.execute(
-                "SELECT book, chapter, verse, text FROM v_verses WHERE id = ?",
-                (link["verse_id"],),
-            ).fetchone()
-            ref = f"{row['book']} {row['chapter']}:{row['verse']}"
-            lines.append(f"{ref}  {row['text']}")
-            if link["note"]:
-                lines.append(f"  note: {link['note']}")
+        for entry in entries:
+            entry_verse_ids = _entry_verse_ids(guide_db, entry["entry_id"])
+            texts = [
+                fts_db.execute(
+                    "SELECT text FROM v_verses WHERE id = ?", (vid,)
+                ).fetchone()["text"]
+                for vid in entry_verse_ids
+            ]
+            ref = entry_reference(fts_db, entry_verse_ids)
+            lines.append(f"{ref}  {' '.join(texts)}")
+            if entry["note"]:
+                lines.append(f"  note: {entry['note']}")
         verses_block = (
-            f"Approved verses in this topic ({len(links)} of {approved_count}):\n"
+            f"Approved verses in this topic ({len(entries)} of {approved_count}):\n"
             + "\n".join(lines)
         )
-        if approved_count > len(links):
+        if approved_count > len(entries):
             verses_block += (
-                f"\n… and {approved_count - len(links)} more approved verses not shown."
+                f"\n… and {approved_count - len(entries)} more approved verses not shown."
             )
     else:
         verses_block = "Approved verses in this topic: none yet."

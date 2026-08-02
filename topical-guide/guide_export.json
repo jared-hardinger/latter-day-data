@@ -1,5 +1,25 @@
 [
   {
+    "name": "Fellowship",
+    "description": "The mutual support and belonging that come from gathering with other believers. Verses about worshiping together, serving one another, and the strength found in community.",
+    "verses": [
+      {
+        "reference": "Mosiah 18:21",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": "We're in this thing together. We need each other"
+      },
+      {
+        "reference": "Helaman 6:3",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": "Fellowship brought joy"
+      }
+    ]
+  },
+  {
     "name": "Jesus Christ - Character",
     "description": "The character and attributes of Jesus Christ. Verses that show who he is, what he values, etc.",
     "verses": []
@@ -9,31 +29,131 @@
     "description": "The act of praying, communicating with God, our Heavenly Father.",
     "verses": [
       {
-        "reference": "Psalms 102:17",
-        "status": "approved",
+        "reference": "Psalms 72:20",
+        "verse_count": 1,
+        "status": "rejected",
         "source": "prefix",
         "note": ""
       },
       {
+        "reference": "Psalms 102:17",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": "God is no respecter of persons. He sees the heart."
+      },
+      {
+        "reference": "Luke 5:16",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": "The Savior spent time alone to pray."
+      },
+      {
         "reference": "1 Thessalonians 5:17",
+        "verse_count": 1,
         "status": "approved",
         "source": "prefix",
         "note": "Prayer is not something you do once a day or only when you need help. It is meant to be continuous, woven through your whole life and all your activities."
       },
       {
+        "reference": "James 5:16",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "phrase",
+        "note": "Fervent prayer, real prayer, does a lot. It has real impact."
+      },
+      {
+        "reference": "Mosiah 26:39",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": "We're commanded to always give thanks no matter what situation we're in."
+      },
+      {
+        "reference": "Alma 34:19",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": "Prayer and humility go together"
+      },
+      {
         "reference": "Alma 37:37",
+        "verse_count": 1,
         "status": "approved",
         "source": "phrase",
         "note": "Counseling with the Lord means praying to him. Prayer is how we bring our concerns and choices to God for his direction."
       },
       {
         "reference": "3 Nephi 19:32",
+        "verse_count": 1,
         "status": "approved",
         "source": "prefix",
         "note": "Jesus prayed to the Father, and his words were so great they could not be captured in language or writing."
       },
       {
         "reference": "Doctrine and Covenants 31:12",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": ""
+      }
+    ]
+  },
+  {
+    "name": "Repentance",
+    "description": "Turning away from sin and returning to God. Verses about genuine change of heart, forsaking wrongdoing, and making amends.",
+    "verses": []
+  },
+  {
+    "name": "Riches and Wealth",
+    "description": "What the Lord teaches about money and material wealth. Verses about the proper place of riches in a faithful life, the danger of loving wealth, and how God views the possession of material goods.",
+    "verses": [
+      {
+        "reference": "Job 21:13",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": "Earthly wealth is temporary"
+      },
+      {
+        "reference": "Psalms 49:6",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": ""
+      },
+      {
+        "reference": "Proverbs 8:18",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": "I like the word durable here. Physical earthly riches are indeed temporary. They die when we die."
+      },
+      {
+        "reference": "1 Corinthians 10:24",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": ""
+      },
+      {
+        "reference": "1 Timothy 6:10",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": ""
+      },
+      {
+        "reference": "Jacob 2:18",
+        "verse_count": 1,
+        "status": "approved",
+        "source": "prefix",
+        "note": ""
+      },
+      {
+        "reference": "Doctrine and Covenants 38:39",
+        "verse_count": 1,
         "status": "approved",
         "source": "prefix",
         "note": ""

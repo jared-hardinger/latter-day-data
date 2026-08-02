@@ -144,12 +144,20 @@ button.btn-reject:hover { background: #4e1a1a; border-color: #d94a4a; }
 }
 .tab-btn:hover { background: none; color: #ccc; }
 .tab-btn.active { color: #fff; border-bottom-color: #4a90d9; }
-.verse-block {
+.entry-block {
   background: #16213e;
   border: 1px solid #2a3a5e;
   border-radius: 10px;
   padding: 1.25rem 1.5rem;
   margin-bottom: 1.2rem;
+}
+.ev { display: inline; }
+.ev + .ev { margin-left: 0.4em; }
+.ev-num {
+  color: #666;
+  font-size: 0.78rem;
+  margin-right: 0.3em;
+  vertical-align: super;
 }
 .verse-ref {
   font-weight: 600;
@@ -293,14 +301,34 @@ button.volume-chip:hover { border-color: #4a90d9; color: #fff; }
 .chapter-panel-ext:hover { text-decoration: underline; }
 .chapter-panel-close { background: none; border: none; color: #999; padding: 0.2rem 0.4rem; }
 .chapter-panel-close:hover { color: #fff; background: none; }
-.chapter-panel-body { overflow-y: auto; padding: 1rem 1.25rem 3rem; }
-.cv { display: flex; gap: 0.6rem; padding: 0.35rem 0.5rem; line-height: 1.6; }
+.chapter-panel-body { flex: 1; overflow-y: auto; padding: 1rem 1.25rem; }
+.cv {
+  display: flex; gap: 0.6rem; padding: 0.35rem 0.5rem; line-height: 1.6;
+  width: 100%; background: none; border: none; border-radius: 6px;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.cv:hover { background: #1c2c4e; }
 .cv-num { color: #666; font-size: 0.8rem; min-width: 1.6rem; text-align: right; padding-top: 0.2rem; }
 .cv-current {
   background: #1a2a4e; border-left: 3px solid #4a90d9;
   border-radius: 0 6px 6px 0; padding-left: 0.5rem;
 }
 .cv-current .cv-num { color: #4a90d9; }
+.cv-curated { border-left: 3px solid #2a9e5a; padding-left: 0.5rem; }
+.cv-selected {
+  background: #223466; border-left: 3px solid #4a90d9;
+  border-radius: 0 6px 6px 0; padding-left: 0.5rem;
+}
+.cv-selected:hover { background: #26397a; }
+
+.chapter-panel-actionbar {
+  border-top: 1px solid #2a3a5e;
+  padding: 0.9rem 1.25rem;
+  background: #16213e;
+}
+.chapter-panel-hint { color: #999; font-size: 0.85rem; }
+.chapter-panel-selection-info { color: #ccc; font-size: 0.88rem; margin-bottom: 0.6rem; }
+.chapter-panel-actionbar-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 
 body.panel-open { padding-right: calc(min(440px, 100vw) + 2rem); }
 @media (max-width: 900px) {
@@ -382,6 +410,11 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (document.querySelector(".modal-backdrop")) {
     closeDeleteModal();
+    return;
+  }
+  if (chapterPanel && panelSelection) {
+    panelSelection = null;
+    renderPanelActionBar();
     return;
   }
   if (chapterPanel) {
@@ -490,10 +523,22 @@ let editModeActive = false;
 let cancelEditFn = null;
 let chapterPanel = null;      // the DOM element, or null when closed
 let chapterPanelToken = 0;    // guards against out-of-order fetches
+let panelSelection = null;    // { anchor, start, end } (verse ids) or null
+let panelChapterData = null;  // last /api/chapter response shown in the panel
+
+// The topic object from whichever renderTopicPage fetch is currently live,
+// and which of its tabs is showing. Both tabs re-fetch topic fresh on every
+// switch, so there is always exactly one "current" topic — the panel and
+// Curate-originated actions (which don't otherwise hold a topic reference)
+// read these instead of needing one threaded in.
+let activeTopic = null;
+let activeTopicTab = "study";
 
 async function renderTopicPage(app, topicId, activeTab) {
   activeTab = activeTab || "study";
+  activeTopicTab = activeTab;
   const topic = await api(`/topics/${topicId}`);
+  activeTopic = topic;
 
   app.innerHTML = `
     <a class="back-link" href="#/">&larr; All topics</a>
@@ -638,7 +683,8 @@ function pluralize(n, word) {
 
 function openDeleteModal(topic, triggerBtn) {
   const counts = [];
-  if (topic.verses.length > 0) counts.push(pluralize(topic.verses.length, "approved verse"));
+  const approvedVerseCount = topic.entries.reduce((sum, e) => sum + e.verse_ids.length, 0);
+  if (approvedVerseCount > 0) counts.push(pluralize(approvedVerseCount, "approved verse"));
   if (topic.rejected_count > 0) counts.push(pluralize(topic.rejected_count, "rejection"));
   if (topic.note_count > 0) counts.push(pluralize(topic.note_count, "note"));
 
@@ -735,8 +781,9 @@ function wireVolumeSummary(root, onSelect) {
 let studyVolumeFilter = null;
 
 function studyVolumeSummaryLabel(topic) {
-  const n = topic.verses.length;
-  return `In this topic — ${n} verse${n === 1 ? "" : "s"}`;
+  const passages = topic.entries.length;
+  const verseCount = topic.entries.reduce((sum, e) => sum + e.verse_ids.length, 0);
+  return `In this topic — ${pluralize(passages, "passage")} · ${pluralize(verseCount, "verse")}`;
 }
 
 function renderStudyVolumeSummary(topic) {
@@ -752,25 +799,25 @@ function renderStudyVolumeSummary(topic) {
 
 function renderStudyVerseList(topic) {
   const listEl = document.getElementById("study-verse-list");
-  const verses = topic.verses.filter(v => !studyVolumeFilter || v.volume_id === studyVolumeFilter);
-  if (verses.length === 0) {
+  const entries = topic.entries.filter(e => !studyVolumeFilter || e.volume_id === studyVolumeFilter);
+  if (entries.length === 0) {
     const filtered = topic.volume_counts.find(c => c.volume_id === studyVolumeFilter);
     listEl.innerHTML = `<p class="empty-state">No ${escapeHtml(filtered ? filtered.volume : "")} verses in this topic.</p>`;
     return;
   }
-  listEl.innerHTML = verses.map(v => `
-    <div class="verse-block" data-verse-id="${v.verse_id}">${studyVerseInnerHtml(v)}</div>
+  listEl.innerHTML = entries.map(e => `
+    <div class="entry-block" data-entry-id="${e.entry_id}">${studyEntryInnerHtml(e)}</div>
   `).join("");
 
-  listEl.querySelectorAll(".verse-block").forEach(block => {
-    const verseId = Number(block.dataset.verseId);
-    wireStudyVerseBlock(block, topic, verseId);
+  listEl.querySelectorAll(".entry-block").forEach(block => {
+    const entryId = Number(block.dataset.entryId);
+    wireEntryBlock(block, topic, entryId);
   });
 }
 
 function renderStudyTab(content, topic) {
   studyVolumeFilter = null;
-  if (topic.verses.length === 0) {
+  if (topic.entries.length === 0) {
     content.innerHTML = `<p class="empty-state">No approved verses yet. Switch to the Curate tab to search and approve some.</p>`;
     return;
   }
@@ -782,140 +829,150 @@ function renderStudyTab(content, topic) {
   renderStudyVerseList(topic);
 }
 
-function studyVerseInnerHtml(v) {
+function studyEntryInnerHtml(e) {
+  const versesHtml = e.verses.length > 1
+    ? e.verses.map(v => `<span class="ev"><span class="ev-num">${v.verse}</span>${escapeHtml(v.text)}</span>`).join(" ")
+    : escapeHtml(e.verses[0].text);
   return `
-    <button type="button" class="verse-ref ref-link" data-verse-id="${v.verse_id}">${escapeHtml(v.reference)}</button>
-    <div class="verse-text">${escapeHtml(v.text)}</div>
-    <div class="note-area" data-verse-id="${v.verse_id}">${studyNoteDisplayHtml(v)}</div>
+    <button type="button" class="verse-ref ref-link" data-verse-id="${e.verse_ids[0]}">${escapeHtml(e.reference)}</button>
+    <div class="verse-text">${versesHtml}</div>
+    <div class="note-area" data-entry-id="${e.entry_id}">${studyNoteDisplayHtml(e)}</div>
   `;
 }
 
-function studyNoteDisplayHtml(v) {
+function studyNoteDisplayHtml(e) {
   return `
-    ${v.note ? `<div class="verse-note">${escapeHtml(v.note)}</div>` : ""}
+    ${e.note ? `<div class="verse-note">${escapeHtml(e.note)}</div>` : ""}
     <div class="note-actions">
-      <button type="button" class="link-btn note-toggle-btn">${v.note ? "Edit note" : "Add note"}</button>
+      <button type="button" class="link-btn note-toggle-btn">${e.note ? "Edit note" : "Add note"}</button>
       <button type="button" class="link-btn verse-remove-btn">Remove</button>
     </div>
     <div class="error-msg verse-error"></div>
   `;
 }
 
-function wireStudyNoteArea(area, topic, verseId) {
+function wireStudyNoteArea(area, topic, entryId) {
   area.querySelector(".note-toggle-btn").addEventListener("click", () => {
-    openStudyNoteEditor(area, topic, verseId);
+    openStudyNoteEditor(area, topic, entryId);
   });
   area.querySelector(".verse-remove-btn").addEventListener("click", (e) => {
-    removeStudyVerse(area.closest(".verse-block"), topic, verseId, e.currentTarget);
+    removeStudyEntry(area.closest(".entry-block"), topic, entryId, e.currentTarget);
   });
 }
 
-function wireStudyVerseBlock(block, topic, verseId) {
-  wireStudyNoteArea(block.querySelector(".note-area"), topic, verseId);
+// Shared by the render path (renderStudyVerseList) and the undo path
+// (undoStudyRemove) — a button wired only in one of them dies after an undo.
+function wireEntryBlock(block, topic, entryId) {
+  wireStudyNoteArea(block.querySelector(".note-area"), topic, entryId);
   const refBtn = block.querySelector(".ref-link");
-  refBtn.addEventListener("click", () => openChapterPanel(verseId, refBtn));
+  refBtn.addEventListener("click", () => openChapterPanel(Number(refBtn.dataset.verseId), refBtn));
 }
 
-async function removeStudyVerse(block, topic, verseId, btn) {
+async function removeStudyEntry(block, topic, entryId, btn) {
   const errBox = block.querySelector(".verse-error");
-  const verse = topic.verses.find(v => v.verse_id === verseId);
+  const entry = topic.entries.find(e => e.entry_id === entryId);
   errBox.textContent = "";
   btn.disabled = true;
   try {
-    await api(`/topics/${topic.id}/verses/${verseId}`, "DELETE");
+    await api(`/topics/${topic.id}/entries/${entryId}`, "DELETE");
   } catch (err) {
     errBox.textContent = err.message;
     btn.disabled = false;
     return;
   }
-  forgetVerseLocally(topic, verse);
-  renderStudyRemovedStrip(block, topic, verse);
+  forgetEntryLocally(topic, entry);
+  renderStudyRemovedStrip(block, topic, entry);
 }
 
-function forgetVerseLocally(topic, verse) {
-  topic.verses = topic.verses.filter(v => v.verse_id !== verse.verse_id);
-  if (verse.note) topic.note_count -= 1;
-  patchCuratedStatus(verse.verse_id, null, "");
+function forgetEntryLocally(topic, entry) {
+  topic.entries = topic.entries.filter(e => e.entry_id !== entry.entry_id);
+  patchCuratedStatusForEntry(entry, null);
   patchStudySummary(topic);
 }
 
-// Recomputes volume_counts from topic.verses (the in-memory source of truth
+// Recomputes volume_counts from topic.entries (the in-memory source of truth
 // after a local forget/restore) and replaces only the strip's inner HTML —
-// removeStudyVerse never re-renders the verse list, so this must not either,
-// or it would destroy other verses' undo strips.
+// removeStudyEntry never re-renders the verse list, so this must not either,
+// or it would destroy other entries' undo strips.
 function patchStudySummary(topic) {
   const counts = topic.volume_counts.map(c => ({ ...c, count: 0 }));
   const byId = new Map(counts.map(c => [c.volume_id, c]));
-  for (const v of topic.verses) {
-    const c = byId.get(v.volume_id);
+  for (const e of topic.entries) {
+    const c = byId.get(e.volume_id);
     if (c) c.count += 1;
   }
   topic.volume_counts = counts;
   renderStudyVolumeSummary(topic);
 }
 
-function renderStudyRemovedStrip(block, topic, verse) {
+function renderStudyRemovedStrip(block, topic, entry) {
   block.innerHTML = `
     <div class="removed-strip" role="status">
-      <span>Removed ${escapeHtml(verse.reference)}.</span>
+      <span>Removed ${escapeHtml(entry.reference)}.</span>
       <button type="button" class="link-btn undo-remove-btn">Undo</button>
       <span class="error-msg undo-error"></span>
     </div>
   `;
   const undoBtn = block.querySelector(".undo-remove-btn");
   undoBtn.focus();
-  undoBtn.addEventListener("click", () => undoStudyRemove(block, topic, verse, undoBtn));
+  undoBtn.addEventListener("click", () => undoStudyRemove(block, topic, entry, undoBtn));
 }
 
-async function undoStudyRemove(block, topic, verse, btn) {
+async function undoStudyRemove(block, topic, entry, btn) {
   const errBox = block.querySelector(".undo-error");
   errBox.textContent = "";
   btn.disabled = true;
+  let restored;
   try {
-    await api(`/topics/${topic.id}/verses`, "POST", {
-      verse_id: verse.verse_id,
-      status: "approved",
-      source: verse.source,
-      note: verse.note,
+    restored = await api(`/topics/${topic.id}/entries`, "POST", {
+      start_verse_id: entry.verse_ids[0],
+      end_verse_id: entry.verse_ids[entry.verse_ids.length - 1],
+      status: entry.status,
+      source: entry.source,
+      note: entry.note,
     });
   } catch (err) {
     errBox.textContent = err.message;
     btn.disabled = false;
     return;
   }
-  restoreVerseLocally(topic, verse);
-  block.innerHTML = studyVerseInnerHtml(verse);
-  wireStudyVerseBlock(block, topic, verse.verse_id);
+  restoreEntryLocally(topic, restored);
+  block.dataset.entryId = restored.entry_id;
+  block.innerHTML = studyEntryInnerHtml(restored);
+  wireEntryBlock(block, topic, restored.entry_id);
   block.querySelector(".verse-remove-btn").focus();
 }
 
-function restoreVerseLocally(topic, verse) {
-  const at = topic.verses.findIndex(v => v.verse_id > verse.verse_id);
-  topic.verses.splice(at === -1 ? topic.verses.length : at, 0, verse);
-  if (verse.note) topic.note_count += 1;
-  patchCuratedStatus(verse.verse_id, "approved", verse.note);
+function restoreEntryLocally(topic, entry) {
+  const at = topic.entries.findIndex(e => e.verse_ids[0] > entry.verse_ids[0]);
+  topic.entries.splice(at === -1 ? topic.entries.length : at, 0, entry);
+  patchCuratedStatusForEntry(entry, entry.status);
   patchStudySummary(topic);
 }
 
-function patchCuratedStatus(verseId, status, note) {
+function patchCuratedStatusForEntry(entry, newStatus) {
   if (!curateState) return;
-  const r = curateState.results.find(x => x.verse_id === verseId);
-  if (!r) return;
-  r.status_in_topic = status;
-  r.note = note;
+  for (const vid of entry.verse_ids) {
+    const r = curateState.results.find(x => x.verse_id === vid);
+    if (!r) continue;
+    r.status_in_topic = newStatus;
+    r.entry_id = newStatus ? entry.entry_id : null;
+    r.entry_reference = newStatus && entry.verse_ids.length > 1 ? entry.reference : null;
+    r.note = newStatus ? entry.note : "";
+  }
 }
 
-function openStudyNoteEditor(area, topic, verseId) {
-  const verse = topic.verses.find(v => v.verse_id === verseId);
-  area.innerHTML = noteRowHtml(verseId, verse.note);
+function openStudyNoteEditor(area, topic, entryId) {
+  const entry = topic.entries.find(e => e.entry_id === entryId);
+  area.innerHTML = noteRowHtml(entryId, entry.note);
 
   const row = area.querySelector(".note-row");
   const cancelBtn = el(`<button type="button" class="link-btn note-cancel-btn">Cancel</button>`);
   row.appendChild(cancelBtn);
 
   const exitToView = () => {
-    area.innerHTML = studyNoteDisplayHtml(verse);
-    wireStudyNoteArea(area, topic, verseId);
+    area.innerHTML = studyNoteDisplayHtml(entry);
+    wireStudyNoteArea(area, topic, entryId);
   };
 
   // A plain click on Cancel blurs the note input first (default browser
@@ -933,7 +990,7 @@ function openStudyNoteEditor(area, topic, verseId) {
   });
 
   wireNoteRow(area, topic.id, (newNote) => {
-    verse.note = newNote;
+    entry.note = newNote;
     exitToView();
   });
 }
@@ -1047,15 +1104,17 @@ function renderResults(content, topicId) {
       node.addEventListener("click", () => setVerseStatus(topicId, verseId, action === "approve" ? "approved" : "rejected"));
     } else if (action === "undo") {
       node.addEventListener("click", () => undoVerse(topicId, verseId));
+    } else if (action === "remove-passage") {
+      node.addEventListener("click", () => removeCuratePassage(topicId, Number(node.dataset.entryId)));
     } else if (action === "context") {
       node.addEventListener("click", () => openChapterPanel(verseId, node));
     }
   });
 
   resultsEl.querySelectorAll(".note-row-wrap").forEach(root => {
-    const verseId = Number(root.querySelector(".note-input").dataset.verseId);
+    const entryId = Number(root.querySelector(".note-input").dataset.entryId);
     wireNoteRow(root, topicId, (newNote) => {
-      const r = findResult(verseId);
+      const r = curateState.results.find(x => x.entry_id === entryId);
       if (r) r.note = newNote;
     });
   });
@@ -1063,11 +1122,16 @@ function renderResults(content, topicId) {
 
 function renderResultRow(r) {
   let statusHtml;
-  if (r.status_in_topic === "approved") {
+  if (r.status_in_topic === "approved" && r.entry_reference) {
+    statusHtml = `
+      <span class="badge badge-approved">In ${escapeHtml(r.entry_reference)}</span>
+      <button class="link-btn" data-action="remove-passage" data-verse-id="${r.verse_id}" data-entry-id="${r.entry_id}">Remove passage</button>
+    `;
+  } else if (r.status_in_topic === "approved") {
     statusHtml = `
       <span class="badge badge-approved">Approved</span>
       <button class="link-btn" data-action="undo" data-verse-id="${r.verse_id}">Undo</button>
-      ${noteRowHtml(r.verse_id, r.note)}
+      ${noteRowHtml(r.entry_id, r.note)}
     `;
   } else if (r.status_in_topic === "rejected") {
     statusHtml = `
@@ -1089,32 +1153,29 @@ function renderResultRow(r) {
   `;
 }
 
-function findResult(verseId) {
-  return curateState.results.find(r => r.verse_id === verseId);
-}
-
 async function setVerseStatus(topicId, verseId, status) {
-  const updated = await api(`/topics/${topicId}/verses`, "POST", {
-    verse_id: verseId,
+  const entry = await api(`/topics/${topicId}/entries`, "POST", {
+    start_verse_id: verseId,
+    end_verse_id: verseId,
     status,
     source: curateState.mode,
   });
-  const r = findResult(verseId);
-  r.status_in_topic = updated.status;
-  r.note = updated.note;
-  renderResults(document.getElementById("tab-content"), topicId);
+  applyEntryChange(entry, []);
 }
 
 async function undoVerse(topicId, verseId) {
-  await api(`/topics/${topicId}/verses/${verseId}`, "DELETE");
-  const r = findResult(verseId);
-  r.status_in_topic = null;
-  r.note = "";
-  renderResults(document.getElementById("tab-content"), topicId);
+  const r = curateState.results.find(x => x.verse_id === verseId);
+  await api(`/topics/${topicId}/entries/${r.entry_id}`, "DELETE");
+  applyEntryChange(null, [r.entry_id]);
 }
 
-async function saveNote(topicId, verseId, note) {
-  return api(`/topics/${topicId}/verses/${verseId}`, "PATCH", { note });
+async function removeCuratePassage(topicId, entryId) {
+  await api(`/topics/${topicId}/entries/${entryId}`, "DELETE");
+  applyEntryChange(null, [entryId]);
+}
+
+async function saveNote(topicId, entryId, note) {
+  return api(`/topics/${topicId}/entries/${entryId}`, "PATCH", { note });
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,13 +1185,13 @@ async function saveNote(topicId, verseId, note) {
 // requiring the caller to track it separately.
 // ---------------------------------------------------------------------------
 
-function noteRowHtml(verseId, note) {
+function noteRowHtml(entryId, note) {
   return `
     <div class="note-row-wrap">
       <div class="note-row">
-        <input type="text" class="note-input" data-verse-id="${verseId}" placeholder="Add a note…" value="${escapeHtml(note || "")}">
-        <button type="button" class="note-fill-btn" data-verse-id="${verseId}" title="Fill with AI">&#10022;</button>
-        <button type="button" class="note-save-btn primary" data-verse-id="${verseId}">Save note</button>
+        <input type="text" class="note-input" data-entry-id="${entryId}" placeholder="Add a note…" value="${escapeHtml(note || "")}">
+        <button type="button" class="note-fill-btn" data-entry-id="${entryId}" title="Fill with AI">&#10022;</button>
+        <button type="button" class="note-save-btn primary" data-entry-id="${entryId}">Save note</button>
       </div>
       <div class="error-msg note-fill-error"></div>
     </div>
@@ -1149,7 +1210,7 @@ function flashSaved(btn) {
 
 function wireNoteRow(root, topicId, onSaved) {
   const input = root.querySelector(".note-input");
-  const verseId = Number(input.dataset.verseId);
+  const entryId = Number(input.dataset.entryId);
   const fillBtn = root.querySelector(".note-fill-btn");
   const saveBtn = root.querySelector(".note-save-btn");
   const errBox = root.querySelector(".note-fill-error");
@@ -1157,7 +1218,7 @@ function wireNoteRow(root, topicId, onSaved) {
   const doSave = async () => {
     errBox.textContent = "";
     try {
-      const updated = await saveNote(topicId, verseId, input.value);
+      const updated = await saveNote(topicId, entryId, input.value);
       flashSaved(saveBtn);
       if (onSaved) onSaved(updated.note);
     } catch (err) {
@@ -1174,7 +1235,7 @@ function wireNoteRow(root, topicId, onSaved) {
     fillBtn.disabled = true;
     fillBtn.textContent = "…";
     try {
-      const result = await api(`/ai/topics/${topicId}/verses/${verseId}/note/fill`, "POST", { prompt: input.value.trim() });
+      const result = await api(`/ai/topics/${topicId}/entries/${entryId}/note/fill`, "POST", { prompt: input.value.trim() });
       input.value = result.note;
     } catch (err) {
       errBox.textContent = err.message;
@@ -1187,8 +1248,12 @@ function wireNoteRow(root, topicId, onSaved) {
 
 // ---------------------------------------------------------------------------
 // Chapter context panel — mounted on document.body (not #app), since both
-// tabs re-render #tab-content freely and would destroy it. Read-only: no
-// approve/reject/note editing lives here.
+// tabs re-render #tab-content freely and would destroy it. Round 6 turns it
+// from read-only context into the selector: click a verse to anchor,
+// shift-click another to set the far end, then Add/Merge/Remove the range
+// via the action bar. The actual POST/DELETE always uses the raw selection —
+// the server's own absorption logic decides the final range; anything
+// computed here from panelChapterData is purely a label preview.
 // ---------------------------------------------------------------------------
 
 function chapterPanelShellHtml() {
@@ -1199,6 +1264,7 @@ function chapterPanelShellHtml() {
         <button type="button" class="chapter-panel-close" aria-label="Close">&#10005;</button>
       </div>
       <div class="chapter-panel-body">Loading…</div>
+      <div class="chapter-panel-actionbar"></div>
     </div>
   `;
 }
@@ -1212,15 +1278,19 @@ async function openChapterPanel(verseId, triggerBtn) {
   } else {
     chapterPanel.querySelector(".chapter-panel-title").textContent = "Loading…";
     chapterPanel.querySelector(".chapter-panel-body").textContent = "Loading…";
+    chapterPanel.querySelector(".chapter-panel-actionbar").innerHTML = "";
     const existingExt = chapterPanel.querySelector(".chapter-panel-ext");
     if (existingExt) existingExt.remove();
   }
   chapterPanel._triggerBtn = triggerBtn;
+  panelSelection = null;
+  panelChapterData = null;
 
   const token = ++chapterPanelToken;
   let data;
   try {
-    data = await api("/chapter?verse_id=" + verseId);
+    const topicQuery = activeTopic ? `&topic_id=${activeTopic.id}` : "";
+    data = await api(`/chapter?verse_id=${verseId}${topicQuery}`);
   } catch (err) {
     if (token !== chapterPanelToken) return;
     chapterPanel.querySelector(".chapter-panel-title").textContent = "Error";
@@ -1236,9 +1306,13 @@ async function openChapterPanel(verseId, triggerBtn) {
   const extLink = el(`<a class="chapter-panel-ext" href="${escapeHtml(data.external_url)}" target="_blank" rel="noopener noreferrer">churchofjesuschrist.org &#8599;</a>`);
   head.insertBefore(extLink, head.querySelector(".chapter-panel-close"));
 
+  panelChapterData = data;
   chapterPanel.querySelector(".chapter-panel-body").innerHTML = data.verses.map(v => `
-    <div class="cv${v.verse === data.verse ? " cv-current" : ""}"><span class="cv-num">${v.verse}</span><span class="cv-text">${escapeHtml(v.text)}</span></div>
+    <button type="button" class="cv${v.verse === data.verse ? " cv-current" : ""}" data-verse-id="${v.verse_id}"><span class="cv-num">${v.verse}</span><span class="cv-text">${escapeHtml(v.text)}</span></button>
   `).join("");
+  wireChapterPanelVerseButtons();
+  renderPanelCuratedTint();
+  renderPanelActionBar();
 
   const current = chapterPanel.querySelector(".cv-current");
   if (current) current.scrollIntoView({ block: "center" });
@@ -1252,8 +1326,204 @@ function closeChapterPanel() {
   chapterPanel.remove();
   chapterPanel = null;
   chapterPanelToken++; // stale any in-flight fetch so it can't touch a null panel
+  panelSelection = null;
+  panelChapterData = null;
   document.body.classList.remove("panel-open");
   if (triggerBtn && triggerBtn.isConnected) triggerBtn.focus();
+}
+
+function wireChapterPanelVerseButtons() {
+  chapterPanel.querySelectorAll(".cv").forEach(btn => {
+    const verseId = Number(btn.dataset.verseId);
+    btn.addEventListener("click", (e) => {
+      if (e.shiftKey && panelSelection) {
+        panelSelection = {
+          anchor: panelSelection.anchor,
+          start: Math.min(panelSelection.anchor, verseId),
+          end: Math.max(panelSelection.anchor, verseId),
+        };
+      } else if (
+        panelSelection && panelSelection.start === panelSelection.end &&
+        panelSelection.start === verseId
+      ) {
+        panelSelection = null; // clicking the currently-selected single verse clears it
+      } else {
+        panelSelection = { anchor: verseId, start: verseId, end: verseId };
+      }
+      renderPanelSelectionTint();
+      renderPanelActionBar();
+    });
+  });
+}
+
+function renderPanelCuratedTint() {
+  if (!chapterPanel || !panelChapterData) return;
+  chapterPanel.querySelectorAll(".cv").forEach(btn => {
+    const vid = Number(btn.dataset.verseId);
+    const v = panelChapterData.verses.find(x => x.verse_id === vid);
+    btn.classList.toggle("cv-curated", !!(v && v.entry_id != null));
+  });
+}
+
+function renderPanelSelectionTint() {
+  if (!chapterPanel) return;
+  chapterPanel.querySelectorAll(".cv").forEach(btn => {
+    const vid = Number(btn.dataset.verseId);
+    const selected = !!panelSelection && vid >= panelSelection.start && vid <= panelSelection.end;
+    btn.classList.toggle("cv-selected", selected);
+  });
+}
+
+function passageReferenceFor(startNum, endNum) {
+  const base = `${panelChapterData.book} ${panelChapterData.chapter}:${startNum}`;
+  return startNum === endNum ? base : `${base}–${endNum}`;
+}
+
+function renderPanelActionBar() {
+  if (!chapterPanel || !panelChapterData) return;
+  const bar = chapterPanel.querySelector(".chapter-panel-actionbar");
+  if (!panelSelection) {
+    bar.innerHTML = `<div class="chapter-panel-hint">Click a verse, shift-click another to select a range.</div>`;
+    return;
+  }
+
+  const selectedVerses = panelChapterData.verses.filter(
+    v => v.verse_id >= panelSelection.start && v.verse_id <= panelSelection.end
+  );
+  const label = `${passageReferenceFor(selectedVerses[0].verse, selectedVerses[selectedVerses.length - 1].verse)} · ${pluralize(selectedVerses.length, "verse")}`;
+
+  const overlappingEntryIds = [...new Set(selectedVerses.map(v => v.entry_id).filter(id => id != null))];
+
+  let actionHtml;
+  let noteHtml = "";
+  if (overlappingEntryIds.length === 0) {
+    actionHtml = `<button type="button" class="primary" id="panel-action-btn">Add to ${escapeHtml(activeTopic.name)}</button>`;
+  } else if (overlappingEntryIds.length === 1 && (() => {
+    const entryVerses = panelChapterData.verses.filter(v => v.entry_id === overlappingEntryIds[0]);
+    const entryMin = Math.min(...entryVerses.map(v => v.verse_id));
+    const entryMax = Math.max(...entryVerses.map(v => v.verse_id));
+    return entryMin === panelSelection.start && entryMax === panelSelection.end;
+  })()) {
+    const entryId = overlappingEntryIds[0];
+    const entry = activeTopic.entries.find(e => e.entry_id === entryId);
+    actionHtml = `<button type="button" class="btn-danger" id="panel-action-btn" data-mode="remove" data-entry-id="${entryId}">Remove from ${escapeHtml(activeTopic.name)}</button>`;
+    if (entry && entry.note) {
+      noteHtml = `<div class="verse-note">${escapeHtml(entry.note)}</div>`;
+    }
+  } else {
+    let unionStart = panelSelection.start, unionEnd = panelSelection.end;
+    for (const entryId of overlappingEntryIds) {
+      for (const v of panelChapterData.verses) {
+        if (v.entry_id !== entryId) continue;
+        if (v.verse_id < unionStart) unionStart = v.verse_id;
+        if (v.verse_id > unionEnd) unionEnd = v.verse_id;
+      }
+    }
+    const unionVerses = panelChapterData.verses.filter(v => v.verse_id >= unionStart && v.verse_id <= unionEnd);
+    const mergedRef = passageReferenceFor(unionVerses[0].verse, unionVerses[unionVerses.length - 1].verse);
+    actionHtml = `<button type="button" class="primary" id="panel-action-btn" data-mode="merge">Merge into ${escapeHtml(mergedRef)}</button>`;
+  }
+
+  bar.innerHTML = `
+    <div class="chapter-panel-selection-info">${escapeHtml(label)}</div>
+    <div class="chapter-panel-actionbar-row">
+      ${actionHtml}
+      <button type="button" class="link-btn" id="panel-clear-btn">Clear</button>
+    </div>
+    <div class="error-msg" id="panel-action-error"></div>
+    ${noteHtml}
+  `;
+
+  bar.querySelector("#panel-action-btn").addEventListener("click", handlePanelAction);
+  bar.querySelector("#panel-clear-btn").addEventListener("click", () => {
+    panelSelection = null;
+    renderPanelSelectionTint();
+    renderPanelActionBar();
+  });
+}
+
+async function handlePanelAction() {
+  const bar = chapterPanel.querySelector(".chapter-panel-actionbar");
+  const btn = bar.querySelector("#panel-action-btn");
+  const errBox = bar.querySelector("#panel-action-error");
+  errBox.textContent = "";
+  btn.disabled = true;
+  try {
+    if (btn.dataset.mode === "remove") {
+      const entryId = Number(btn.dataset.entryId);
+      await api(`/topics/${activeTopic.id}/entries/${entryId}`, "DELETE");
+      applyEntryChange(null, [entryId]);
+    } else {
+      const removedEntryIds = [...new Set(
+        panelChapterData.verses
+          .filter(v => v.verse_id >= panelSelection.start && v.verse_id <= panelSelection.end)
+          .map(v => v.entry_id)
+          .filter(id => id != null)
+      )];
+      const entry = await api(`/topics/${activeTopic.id}/entries`, "POST", {
+        start_verse_id: panelSelection.start,
+        end_verse_id: panelSelection.end,
+        status: "approved",
+        source: "manual",
+      });
+      applyEntryChange(entry, removedEntryIds);
+    }
+  } catch (err) {
+    errBox.textContent = err.message;
+    btn.disabled = false;
+  }
+}
+
+// Backs the panel's Add/Merge/Remove *and* Curate's approve/reject/undo/
+// remove-passage — the one code path that mutates local state after any
+// curation change reaches topic.entries (Study), curateState.results
+// (Curate), and the open panel's own tint, wherever each of those happens to
+// currently exist. `entry` is null for a pure removal.
+function applyEntryChange(entry, removedEntryIds) {
+  if (activeTopic) {
+    activeTopic.entries = activeTopic.entries.filter(e => !removedEntryIds.includes(e.entry_id));
+    if (entry) {
+      const at = activeTopic.entries.findIndex(e => e.verse_ids[0] > entry.verse_ids[0]);
+      activeTopic.entries.splice(at === -1 ? activeTopic.entries.length : at, 0, entry);
+    }
+    patchStudySummary(activeTopic);
+    if (activeTopicTab === "study" && document.getElementById("study-verse-list")) {
+      renderStudyVerseList(activeTopic);
+    }
+  }
+
+  if (curateState && activeTopic && curateState.topicId === activeTopic.id) {
+    for (const r of curateState.results) {
+      if (entry && entry.verse_ids.includes(r.verse_id)) {
+        r.status_in_topic = entry.status;
+        r.entry_id = entry.entry_id;
+        r.entry_reference = entry.verse_ids.length > 1 ? entry.reference : null;
+        r.note = entry.note;
+      } else if (removedEntryIds.includes(r.entry_id)) {
+        r.status_in_topic = null;
+        r.entry_id = null;
+        r.entry_reference = null;
+        r.note = "";
+      }
+    }
+    if (document.getElementById("results")) {
+      renderResults(document.getElementById("tab-content"), curateState.topicId);
+    }
+  }
+
+  if (panelChapterData) {
+    panelChapterData.verses.forEach(v => {
+      if (removedEntryIds.includes(v.entry_id)) v.entry_id = null;
+      if (entry && entry.verse_ids.includes(v.verse_id)) v.entry_id = entry.entry_id;
+    });
+    if (chapterPanel) renderPanelCuratedTint();
+  }
+
+  panelSelection = null;
+  if (chapterPanel) {
+    renderPanelSelectionTint();
+    renderPanelActionBar();
+  }
 }
 </script>
 </body>

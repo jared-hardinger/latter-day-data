@@ -139,38 +139,77 @@ that same form, behind a confirmation modal that names the topic and exactly
 what it destroys (approved verses, rejections, notes). Deletion is
 **permanent** — there's no archive or trash, and no `window.confirm`; the
 modal spells out that git history of `guide_export.json` is the only way
-back. `topic_verses` rows cascade automatically.
+back. `topic_entries` and `topic_verses` rows cascade automatically.
 
-A verse's note can also be edited straight from the Study tab now (an
-**Add note** / **Edit note** link under each verse), not just from a Curate
+A passage's note can also be edited straight from the Study tab now (an
+**Add note** / **Edit note** link under each block), not just from a Curate
 search — the same note row, AI fill included, is shared between both tabs.
 
-A verse can be dropped from a topic straight from the Study tab too, with a
-**Remove** link beside the note controls. Removing deletes the
-`topic_verses` link outright — note and all — rather than marking the verse
-rejected, so it goes back to being unmarked and shows fresh **Approve** /
-**Reject** buttons if it turns up in a later Curate search. An inline
-**Undo** strip appears in the verse's place; it's session-only and restores
-the verse, its note, and its source if pressed before the next reload.
+A passage can be dropped from a topic straight from the Study tab too, with a
+**Remove** link beside the note controls. Removing deletes the entry
+outright — every verse it covers, and its note — rather than marking it
+rejected, so a single-verse passage goes back to being unmarked and shows
+fresh **Approve** / **Reject** buttons if it turns up in a later Curate
+search. An inline **Undo** strip appears in the block's place; it's
+session-only and restores the whole passage — its range, note, and source —
+if pressed before the next reload.
 
 Both tabs show a **volume summary strip** — all five volumes, always, zeros
-included — above their verse list. Clicking a volume filters the list below
-it; **Clear filter** returns to everything. The two strips look identical
-but count different things: Study's counts approved verses in the topic and
+included — above their list. Clicking a volume filters the list below it;
+**Clear filter** returns to everything. The two strips look identical but
+count different things: Study's counts approved *passages* in the topic and
 only changes when you remove or undo one, while Curate's counts matches for
 the current search and only changes when you run a new search (approving or
 rejecting a result doesn't move it). Curate's filter re-queries the server,
 so it isn't limited to whatever landed in the first page of results; Study's
-filter is a client-side filter over the verses already on screen. Both
+filter is a client-side filter over the passages already on screen. Both
 filters are session-only, clearing on tab switch, navigation, and reload.
+
+### Passages
+
+The unit of curation is a **passage** — a contiguous range of verses within
+one chapter, added to a topic as a single entry with one Study block, one
+note, and one Remove. A single verse is a passage of length one, so nothing
+about that case is any different from before.
+
+- **Ranges must be contiguous and within one book and chapter.** There's no
+  reference notation for "3 Ne 18:15, 16, 20", and no clear meaning distinct
+  from two separate passages — contiguity is what makes a reference string
+  like `3 Nephi 18:15–16` honest. A passage is capped at 40 verses, a guard
+  against a fat-fingered selection swallowing a whole chapter.
+- **Overlapping adds merge; adjacent adds don't.** Adding 16–18 over an
+  existing 15–16 produces one entry, 15–18 — the schema only lets a verse
+  belong to one entry per topic, so any overlap absorbs the whole entry it
+  touches, even the part outside the range you asked for. Adding 17 next to
+  an existing 15–16 produces two entries, because auto-joining on adjacency
+  would quietly destroy exactly the boundary passages exist to preserve.
+  When a merge absorbs one or more existing notes, they're concatenated with
+  the new note (if any) in verse order, separated by a blank line.
+- **Multi-verse passages are always approved.** Rejecting one is a
+  Curate-tab tombstone on a single search hit, so a passage with more than
+  one verse can't be rejected — `PATCH status=rejected` on one is a 422
+  telling you to remove it instead. A new approved passage absorbs and
+  deletes any rejected singleton it covers.
+- **A passage is one thing when counting.** The Study header reads
+  `8 passages · 17 verses`; the home-page card and the volume chips count
+  passages, so a chip's number always equals the number of blocks it
+  reveals.
+- **Splitting and trimming a passage are out of scope.** To turn 15–18 into
+  15–16, remove it and re-add — there's no way to edit a passage's range in
+  place yet.
+
+Passages are selected inside the chapter context panel (below): click a verse
+to anchor a range, shift-click another to extend it, then use the panel's
+action bar to add, merge, or remove.
 
 ### Verse ordering
 
-Every list of verses in the app — Study tab, Curate results, the chapter
-context panel, and `guide_export.json` — reads in canonical scripture order:
-volume, then book, then chapter, then verse. Verse IDs in the scripture
-database are already assigned in exactly that sequence, so this is a plain
-`ORDER BY verse_id` everywhere, with no sort key to maintain.
+Every list in the app — Study tab, Curate results, the chapter context panel,
+and `guide_export.json` — reads in canonical scripture order: volume, then
+book, then chapter, then verse. A passage sorts by its lowest verse id.
+Verse IDs in the scripture database are already assigned in canonical
+sequence, so this is a plain `ORDER BY verse_id` (or, for an entry,
+`ORDER BY MIN(verse_id)`) everywhere, with no sort key to maintain.
 
 Curate search is included in that, which means results are **not** ranked by
 relevance. A search is capped at 50 matches, and the cap applies to canonical
@@ -188,9 +227,11 @@ well — you review and save, the AI never writes to the database:
   language (e.g. "verses about praying when you don't feel like it") and
   press **✦ Fill with AI** to draft a name and description.
 - **Fill a note** — on the Curate tab (or now the Study tab), press **✦**
-  beside a verse's note box to draft a note from the verse and topic context
-  (or, with rough words already typed, to sharpen them without changing the
-  point). **Save note** persists it — nothing is saved until you press it.
+  beside a passage's note box to draft a note from its verses and topic
+  context (every verse of a multi-verse passage is marked in the prompt, not
+  just the one you clicked from), or, with rough words already typed, to
+  sharpen them without changing the point. **Save note** persists it —
+  nothing is saved until you press it.
 - **Polish a description** — on an existing topic's Edit form, press
   **✦ Polish with AI** to rewrite the description against the topic's own
   approved verses (and their notes), not just a prompt. It can occasionally
@@ -205,14 +246,17 @@ works normally.
 
 ### What's committed vs. derived
 
-- `topical-guide/guide.db` — your curated topics and verse approvals, in its
-  own SQLite database (verses are referenced by their stable IDs into
+- `topical-guide/guide.db` — your curated topics and passage approvals, in
+  its own SQLite database (verses are referenced by their stable IDs into
   `scriptures.db`). Created automatically on first run if missing. This is
   the hand-made, precious artifact — **it's committed to the repo**, same as
   `scriptures.db`.
 - `topical-guide/guide_export.json` — a plain-text mirror of `guide.db`,
   rewritten after every change with deterministic ordering so git history
-  shows a readable diff of your curation over time. Also **committed**.
+  shows a readable diff of your curation over time. Also **committed**. Each
+  entry carries a `reference` (hyphen, not en dash — `3 Nephi 18:15-16` —
+  since this file is a git artifact you grep and diff, and ASCII keeps it
+  so) and a `verse_count`.
 - `scriptures/scriptures_fts.db` — same derived, gitignored full-text index
   described above. The server refuses to start without it.
 - `topical-guide/ai_log.db` and `topical-guide/.env` — gitignored. Call logs
@@ -235,13 +279,37 @@ tab's volume filter chips. It doesn't change the response's `volume_counts`,
 which always describes the unfiltered query, so the strip stays a stable
 navigation control while you click between volumes.
 
+A result whose verse sits inside a passage carries `entry_id` and
+`entry_reference` alongside `status_in_topic`, so the row can say `In
+3 Nephi 18:15–16` instead of just `Approved`. `entry_reference` is only
+populated for a multi-verse passage — a singleton's reference is identical
+to the verse's own, so the plain `Approved` badge already says everything it
+would. Removing such a row's passage (**Remove passage**) deletes the whole
+entry, not just the verse you searched for.
+
 ### Verse context
 
 Clicking a reference — on the Study tab or the Curate tab — opens a
-read-only right-side panel showing the verse's whole chapter, with the
-subject verse highlighted and scrolled into view. The panel header links out
-to the same chapter on churchofjesuschrist.org, opening in a new tab.
-`GET /api/chapter?verse_id=N` is the endpoint behind it.
+right-side panel showing the verse's whole chapter, with the subject verse
+highlighted and scrolled into view. The panel header links out to the same
+chapter on churchofjesuschrist.org, opening in a new tab.
+`GET /api/chapter?verse_id=N` is the endpoint behind it; with an added
+`topic_id`, each returned verse also carries the `entry_id` of the approved
+passage it belongs to (or null), which is what lets the panel tint verses
+already in the topic.
+
+The panel is also where passages are selected: click a verse to anchor a
+range and collapse the selection to it (clicking the same lone selected verse
+clears it); shift-click another verse to extend the range to it. A sticky
+action bar at the bottom of the panel reads the selection back to you —
+`3 Nephi 18:15–16 · 2 verses` — with a button that adapts to what the
+selection would do: **Add to `<topic>`** when it touches nothing curated,
+**Merge into `<the resulting reference>`** when it overlaps an existing
+passage, or **Remove from `<topic>`** (plus the passage's note, read-only)
+when the selection exactly matches one. Notes themselves stay editable only
+on the Study tab — the panel does one job. Escape clears an active selection
+before it closes the panel, and closes the panel before it cancels topic
+edit mode.
 
 ## General Conference Talk Corpus Builder
 

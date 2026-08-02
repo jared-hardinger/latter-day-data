@@ -1,9 +1,8 @@
 """
 test_server.py
 ===============
-Tests for PATCH/DELETE on topics and the note_count field on GET
-/api/topics/{id} — none of these had tests before round 2. No AI mocking
-needed; these endpoints never touch ai.py.
+Tests for the topical guide's FastAPI backend, covering topics, entries
+(passages), search, the chapter panel, and the JSON export.
 
 Every test runs against a fresh temp-file guide.db, monkeypatched in per
 test, so nothing here can touch the real topical-guide/guide.db.
@@ -97,6 +96,21 @@ def create_topic(client, name="Prayer", description=""):
     return resp.json()["id"]
 
 
+def create_entry(
+    client, topic_id, start_verse_id, end_verse_id=None, status="approved",
+    source="manual", note=None,
+):
+    body = {
+        "start_verse_id": start_verse_id,
+        "end_verse_id": end_verse_id if end_verse_id is not None else start_verse_id,
+        "status": status,
+        "source": source,
+    }
+    if note is not None:
+        body["note"] = note
+    return client.post(f"/api/topics/{topic_id}/entries", json=body)
+
+
 def topic_verses_count(paths, topic_id=None):
     conn = sqlite3.connect(paths["guide_db"])
     try:
@@ -109,6 +123,18 @@ def topic_verses_count(paths, topic_id=None):
         conn.close()
 
 
+def topic_entries_count(paths, topic_id=None):
+    conn = sqlite3.connect(paths["guide_db"])
+    try:
+        if topic_id is None:
+            return conn.execute("SELECT COUNT(*) FROM topic_entries").fetchone()[0]
+        return conn.execute(
+            "SELECT COUNT(*) FROM topic_entries WHERE topic_id = ?", (topic_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # 1. PATCH renaming a topic leaves topic_verses untouched
 # ---------------------------------------------------------------------------
@@ -116,10 +142,7 @@ def topic_verses_count(paths, topic_id=None):
 
 def test_patch_rename_leaves_topic_verses_untouched(client, paths):
     topic_id = create_topic(client, "Prayer", "General pattern of prayer.")
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
-    )
+    create_entry(client, topic_id, _TEST_VERSE["id"])
     before = topic_verses_count(paths, topic_id)
 
     resp = client.patch(f"/api/topics/{topic_id}", json={"name": "Prayerfulness"})
@@ -170,22 +193,22 @@ def test_patch_with_only_name_leaves_description_alone(client):
 
 
 # ---------------------------------------------------------------------------
-# 4. DELETE cascades topic_verses and removes the topic from the export
+# 4. DELETE cascades topic_verses/topic_entries and removes the topic from
+#    the export
 # ---------------------------------------------------------------------------
 
 
 def test_delete_cascades_and_updates_export(client, paths):
     topic_id = create_topic(client, "Prayer", "General pattern of prayer.")
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
-    )
+    create_entry(client, topic_id, _TEST_VERSE["id"])
     assert topic_verses_count(paths, topic_id) == 1
+    assert topic_entries_count(paths, topic_id) == 1
 
     resp = client.delete(f"/api/topics/{topic_id}")
     assert resp.status_code == 204
 
     assert topic_verses_count(paths, topic_id) == 0
+    assert topic_entries_count(paths, topic_id) == 0
     assert client.get(f"/api/topics/{topic_id}").status_code == 404
 
     with open(paths["export"]) as f:
@@ -194,23 +217,17 @@ def test_delete_cascades_and_updates_export(client, paths):
 
 
 # ---------------------------------------------------------------------------
-# 5. note_count counts notes on rejected links too, excludes empty strings
+# 5. note_count counts notes on rejected entries too, excludes empty strings
 # ---------------------------------------------------------------------------
 
 
 def test_note_count_includes_rejected_and_excludes_empty(client):
     topic_id = create_topic(client, "Prayer")
-    verse_ids = [_TEST_VERSE["id"]]
 
-    # An approved link with a note.
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={
-            "verse_id": verse_ids[0],
-            "status": "approved",
-            "source": "manual",
-            "note": "the counsel comes before the doing",
-        },
+    # An approved entry with a note.
+    create_entry(
+        client, topic_id, _TEST_VERSE["id"],
+        note="the counsel comes before the doing",
     )
 
     conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
@@ -224,21 +241,13 @@ def test_note_count_includes_rejected_and_excludes_empty(client):
     finally:
         conn.close()
 
-    # A rejected link with a note — should still count.
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={
-            "verse_id": second_verse_id,
-            "status": "rejected",
-            "source": "manual",
-            "note": "close, but not quite the right link",
-        },
+    # A rejected entry with a note — should still count.
+    create_entry(
+        client, topic_id, second_verse_id, status="rejected",
+        note="close, but not quite the right link",
     )
-    # An approved link with an empty note — should not count.
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": third_verse_id, "status": "approved", "source": "manual"},
-    )
+    # An approved entry with an empty note — should not count.
+    create_entry(client, topic_id, third_verse_id)
 
     topic = client.get(f"/api/topics/{topic_id}").json()
     assert topic["note_count"] == 2
@@ -246,7 +255,8 @@ def test_note_count_includes_rejected_and_excludes_empty(client):
 
 
 # ---------------------------------------------------------------------------
-# 6. DELETE /topics/{id}/verses/{verse_id} — round 3
+# 6. DELETE /topics/{id}/entries/{entry_id} — carried over from round 3's
+#    verse-level delete, now entry-level
 # ---------------------------------------------------------------------------
 
 
@@ -267,19 +277,13 @@ def _second_test_verse() -> sqlite3.Row:
 _SECOND_TEST_VERSE = _second_test_verse()
 
 
-def test_delete_verse_removes_row_and_updates_export(client, paths):
+def test_delete_entry_removes_row_and_updates_export(client, paths):
     topic_id = create_topic(client, "Prayer")
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
-    )
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": _SECOND_TEST_VERSE["id"], "status": "approved", "source": "manual"},
-    )
+    create_entry(client, topic_id, _TEST_VERSE["id"])
+    entry2 = create_entry(client, topic_id, _SECOND_TEST_VERSE["id"]).json()
     assert topic_verses_count(paths, topic_id) == 2
 
-    resp = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
+    resp = client.delete(f"/api/topics/{topic_id}/entries/{entry2['entry_id']}")
     assert resp.status_code == 204
 
     assert topic_verses_count(paths, topic_id) == 1
@@ -289,33 +293,27 @@ def test_delete_verse_removes_row_and_updates_export(client, paths):
     prayer = next(t for t in export if t["name"] == "Prayer")
     refs = [v["reference"] for v in prayer["verses"]]
     assert refs == [
-        f"{_SECOND_TEST_VERSE['book']} {_SECOND_TEST_VERSE['chapter']}:{_SECOND_TEST_VERSE['verse']}"
+        f"{_TEST_VERSE['book']} {_TEST_VERSE['chapter']}:{_TEST_VERSE['verse']}"
     ]
 
 
-def test_delete_verse_is_idempotent(client):
+def test_delete_entry_is_idempotent(client):
     topic_id = create_topic(client, "Prayer")
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
-    )
+    entry = create_entry(client, topic_id, _TEST_VERSE["id"]).json()
 
-    first = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
-    second = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
+    first = client.delete(f"/api/topics/{topic_id}/entries/{entry['entry_id']}")
+    second = client.delete(f"/api/topics/{topic_id}/entries/{entry['entry_id']}")
     assert first.status_code == 204
     assert second.status_code == 204
 
 
-def test_delete_verse_scoped_to_one_topic(client, paths):
+def test_delete_entry_scoped_to_one_topic(client, paths):
     topic_a = create_topic(client, "Prayer")
     topic_b = create_topic(client, "Adversity")
-    for topic_id in (topic_a, topic_b):
-        client.post(
-            f"/api/topics/{topic_id}/verses",
-            json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
-        )
+    entry_a = create_entry(client, topic_a, _TEST_VERSE["id"]).json()
+    create_entry(client, topic_b, _TEST_VERSE["id"])
 
-    resp = client.delete(f"/api/topics/{topic_a}/verses/{_TEST_VERSE['id']}")
+    resp = client.delete(f"/api/topics/{topic_a}/entries/{entry_a['entry_id']}")
     assert resp.status_code == 204
 
     assert topic_verses_count(paths, topic_a) == 0
@@ -324,62 +322,44 @@ def test_delete_verse_scoped_to_one_topic(client, paths):
 
 def test_undo_round_trip_preserves_note_and_source(client):
     topic_id = create_topic(client, "Prayer")
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={
-            "verse_id": _TEST_VERSE["id"],
-            "status": "approved",
-            "source": "phrase",
-            "note": "the counsel comes before the doing",
-        },
-    )
+    entry = create_entry(
+        client, topic_id, _TEST_VERSE["id"], source="phrase",
+        note="the counsel comes before the doing",
+    ).json()
 
-    resp = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
+    resp = client.delete(f"/api/topics/{topic_id}/entries/{entry['entry_id']}")
     assert resp.status_code == 204
 
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={
-            "verse_id": _TEST_VERSE["id"],
-            "status": "approved",
-            "source": "phrase",
-            "note": "the counsel comes before the doing",
-        },
+    create_entry(
+        client, topic_id, _TEST_VERSE["id"], source="phrase",
+        note="the counsel comes before the doing",
     )
 
     topic = client.get(f"/api/topics/{topic_id}").json()
-    verse = next(v for v in topic["verses"] if v["verse_id"] == _TEST_VERSE["id"])
-    assert verse["note"] == "the counsel comes before the doing"
-    assert verse["source"] == "phrase"
+    restored = next(e for e in topic["entries"] if e["verse_ids"] == [_TEST_VERSE["id"]])
+    assert restored["note"] == "the counsel comes before the doing"
+    assert restored["source"] == "phrase"
 
 
 def test_delete_then_repost_without_note_yields_empty_note(client):
     topic_id = create_topic(client, "Prayer")
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={
-            "verse_id": _TEST_VERSE["id"],
-            "status": "approved",
-            "source": "manual",
-            "note": "the counsel comes before the doing",
-        },
-    )
+    entry = create_entry(
+        client, topic_id, _TEST_VERSE["id"],
+        note="the counsel comes before the doing",
+    ).json()
 
-    resp = client.delete(f"/api/topics/{topic_id}/verses/{_TEST_VERSE['id']}")
+    resp = client.delete(f"/api/topics/{topic_id}/entries/{entry['entry_id']}")
     assert resp.status_code == 204
 
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
-    )
+    create_entry(client, topic_id, _TEST_VERSE["id"])
 
     topic = client.get(f"/api/topics/{topic_id}").json()
-    verse = next(v for v in topic["verses"] if v["verse_id"] == _TEST_VERSE["id"])
-    assert verse["note"] == ""
+    restored = next(e for e in topic["entries"] if e["verse_ids"] == [_TEST_VERSE["id"]])
+    assert restored["note"] == ""
 
 
 # ---------------------------------------------------------------------------
-# 7. Volume summary and filter — round 4
+# 7. Volume summary and filter — round 4, now over entries
 # ---------------------------------------------------------------------------
 
 _CANONICAL_VOLUMES = [
@@ -393,10 +373,7 @@ _CANONICAL_VOLUMES = [
 
 def test_topic_volume_counts_five_entries_one_nonzero(client):
     topic_id = create_topic(client, "Prayer")
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
-    )
+    create_entry(client, topic_id, _TEST_VERSE["id"])
 
     topic = client.get(f"/api/topics/{topic_id}").json()
     counts = topic["volume_counts"]
@@ -416,27 +393,21 @@ def test_topic_volume_counts_five_zeros_when_no_verses(client):
 
 def test_topic_volume_counts_excludes_rejected(client):
     topic_id = create_topic(client, "Prayer")
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": _TEST_VERSE["id"], "status": "rejected", "source": "manual"},
-    )
+    create_entry(client, topic_id, _TEST_VERSE["id"], status="rejected")
 
     topic = client.get(f"/api/topics/{topic_id}").json()
     counts = topic["volume_counts"]
     assert [c["count"] for c in counts] == [0, 0, 0, 0, 0]
 
 
-def test_topic_verses_carry_volume_fields(client):
+def test_topic_entries_carry_volume_fields(client):
     topic_id = create_topic(client, "Prayer")
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": _TEST_VERSE["id"], "status": "approved", "source": "manual"},
-    )
+    create_entry(client, topic_id, _TEST_VERSE["id"])
 
     topic = client.get(f"/api/topics/{topic_id}").json()
-    verse = topic["verses"][0]
-    assert verse["volume"] == "Old Testament"
-    assert verse["volume_id"] == 1
+    entry = topic["entries"][0]
+    assert entry["volume"] == "Old Testament"
+    assert entry["volume_id"] == 1
 
 
 def test_search_volume_counts_sum_to_total(client):
@@ -532,10 +503,7 @@ def test_search_volume_id_with_topic_id_status_in_topic(client):
         ).fetchone()[0]
     finally:
         conn.close()
-    client.post(
-        f"/api/topics/{topic_id}/verses",
-        json={"verse_id": ot_money_verse_id, "status": "approved", "source": "manual"},
-    )
+    create_entry(client, topic_id, ot_money_verse_id)
 
     resp = client.get(
         "/api/search",
@@ -551,6 +519,9 @@ def test_search_volume_id_with_topic_id_status_in_topic(client):
     data = resp.json()
     result = next(r for r in data["results"] if r["verse_id"] == ot_money_verse_id)
     assert result["status_in_topic"] == "approved"
+    # A singleton entry's reference is identical to the verse's own — not
+    # worth surfacing separately.
+    assert result["entry_reference"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +593,32 @@ def test_get_chapter_missing_verse_id_422(client):
     assert resp.status_code == 422
 
 
+def test_get_chapter_marks_curated_verses_with_entry_id(client):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+    v18 = _verse_id_for("3 Nephi", 18, 18)
+    entry = create_entry(client, topic_id, v15, v16).json()
+    create_entry(client, topic_id, v18, v18, status="rejected")
+
+    resp = client.get("/api/chapter", params={"verse_id": v15, "topic_id": topic_id})
+    assert resp.status_code == 200
+    by_id = {v["verse_id"]: v["entry_id"] for v in resp.json()["verses"]}
+    assert by_id[v15] == entry["entry_id"]
+    assert by_id[v16] == entry["entry_id"]
+    # A rejected singleton is a tombstone, not something "in the topic" —
+    # the panel doesn't tint it.
+    assert by_id[v18] is None
+    v17 = _verse_id_for("3 Nephi", 18, 17)
+    assert by_id[v17] is None
+
+
+def test_get_chapter_without_topic_id_omits_entry_id(client):
+    verse_id = _verse_id_for("Jacob", 2, 18)
+    resp = client.get("/api/chapter", params={"verse_id": verse_id})
+    assert all(v["entry_id"] is None for v in resp.json()["verses"])
+
+
 def test_books_and_volumes_all_have_lds_url_slugs():
     conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
     try:
@@ -639,3 +636,282 @@ def test_books_and_volumes_all_have_lds_url_slugs():
     assert missing_books == 0
     assert volume_count == 5
     assert book_count == 87
+
+
+# ---------------------------------------------------------------------------
+# 8. Migration — old shape to entries (round 6)
+# ---------------------------------------------------------------------------
+
+
+def test_migration_preserves_status_note_and_source(tmp_path, monkeypatch):
+    guide_db_path = str(tmp_path / "old_guide.db")
+    export_path = str(tmp_path / "old_guide_export.json")
+    monkeypatch.setattr(server, "GUIDE_DB_PATH", guide_db_path)
+    monkeypatch.setattr(server, "EXPORT_PATH", export_path)
+
+    # Build an old-shape database by hand — the pre-round-6 schema.
+    conn = sqlite3.connect(guide_db_path)
+    conn.executescript(
+        """
+        CREATE TABLE topics (
+            id          INTEGER PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE topic_verses (
+            topic_id  INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+            verse_id  INTEGER NOT NULL,
+            status    TEXT NOT NULL CHECK (status IN ('approved', 'rejected')),
+            note      TEXT NOT NULL DEFAULT '',
+            source    TEXT NOT NULL CHECK (source IN ('exact','prefix','phrase','semantic','manual')),
+            added_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (topic_id, verse_id)
+        );
+        """
+    )
+    conn.execute("INSERT INTO topics (id, name) VALUES (1, 'Prayer')")
+    conn.execute(
+        """INSERT INTO topic_verses (topic_id, verse_id, status, note, source)
+           VALUES (1, ?, 'approved', 'a note on the approved row', 'manual')""",
+        (_TEST_VERSE["id"],),
+    )
+    conn.execute(
+        """INSERT INTO topic_verses (topic_id, verse_id, status, note, source)
+           VALUES (1, ?, 'rejected', 'a note on the rejected row', 'prefix')""",
+        (_SECOND_TEST_VERSE["id"],),
+    )
+    conn.commit()
+    conn.close()
+
+    server.init_guide_db()
+
+    conn = sqlite3.connect(guide_db_path)
+    conn.row_factory = sqlite3.Row
+    entries = conn.execute(
+        "SELECT status, note, source FROM topic_entries ORDER BY id"
+    ).fetchall()
+    assert len(entries) == 2
+    assert {(e["status"], e["note"], e["source"]) for e in entries} == {
+        ("approved", "a note on the approved row", "manual"),
+        ("rejected", "a note on the rejected row", "prefix"),
+    }
+    link_count = conn.execute("SELECT COUNT(*) FROM topic_verses").fetchone()[0]
+    assert link_count == 2
+    assert server.needs_entry_migration(conn) is False
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 9. expand_range edge cases (round 6)
+# ---------------------------------------------------------------------------
+
+
+def test_create_entry_cross_chapter_returns_400(client):
+    topic_id = create_topic(client, "Prayer")
+    v_end_of_18 = _verse_id_for("3 Nephi", 18, 39)
+    v_start_of_19 = _verse_id_for("3 Nephi", 19, 1)
+    resp = create_entry(client, topic_id, v_end_of_18, v_start_of_19)
+    assert resp.status_code == 400
+
+
+def test_create_entry_reversed_ends_normalizes(client):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+    resp = create_entry(client, topic_id, v16, v15)
+    assert resp.status_code == 201
+    assert resp.json()["verse_ids"] == [v15, v16]
+
+
+def test_create_entry_nonexistent_verse_returns_400(client):
+    topic_id = create_topic(client, "Prayer")
+    resp = create_entry(client, topic_id, 99999999, 99999999)
+    assert resp.status_code == 400
+
+
+def test_create_entry_over_max_passage_verses_returns_422(client):
+    topic_id = create_topic(client, "Prayer")
+    conn = sqlite3.connect(f"file:{_FTS_DB_PATH}?mode=ro", uri=True)
+    try:
+        ids = [
+            r[0] for r in conn.execute(
+                "SELECT id FROM v_verses WHERE book = 'Psalms' AND chapter = 119 "
+                "ORDER BY verse LIMIT ?",
+                (server.MAX_PASSAGE_VERSES + 1,),
+            )
+        ]
+    finally:
+        conn.close()
+    assert len(ids) == server.MAX_PASSAGE_VERSES + 1
+    resp = create_entry(client, topic_id, ids[0], ids[-1])
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# 10. Absorption / merge (round 6)
+# ---------------------------------------------------------------------------
+
+
+def test_overlapping_add_merges_into_one_entry_with_joined_notes(client):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+    v17 = _verse_id_for("3 Nephi", 18, 17)
+    v18 = _verse_id_for("3 Nephi", 18, 18)
+
+    first = create_entry(client, topic_id, v15, v16, note="note A").json()
+    assert first["reference"] == "3 Nephi 18:15–16"
+
+    second = create_entry(client, topic_id, v16, v18, note="note B").json()
+    assert second["verse_ids"] == [v15, v16, v17, v18]
+    assert second["reference"] == "3 Nephi 18:15–18"
+    assert second["note"] == "note A\n\nnote B"
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    assert topic["passage_count"] == 1
+    assert topic["verse_count"] == 4
+    assert [e["entry_id"] for e in topic["entries"]] == [second["entry_id"]]
+
+
+def test_adjacent_add_does_not_merge(client):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+    v17 = _verse_id_for("3 Nephi", 18, 17)
+
+    create_entry(client, topic_id, v15, v16)
+    create_entry(client, topic_id, v17, v17)
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    assert topic["passage_count"] == 2
+    refs = sorted(e["reference"] for e in topic["entries"])
+    assert refs == ["3 Nephi 18:15–16", "3 Nephi 18:17"]
+
+
+def test_approved_range_absorbs_and_deletes_rejected_singleton(client, paths):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+
+    create_entry(client, topic_id, v16, v16, status="rejected")
+    assert topic_entries_count(paths, topic_id) == 1
+
+    merged = create_entry(client, topic_id, v15, v16).json()
+    # The overlapping rejected singleton at v16 is absorbed (deleted, not
+    # merged in beyond the verse already in the requested range) — the
+    # result is exactly the requested 15-16, approved, and it's the only
+    # entry left in the topic (the rejected singleton didn't survive
+    # alongside it under a reused id or otherwise).
+    assert merged["verse_ids"] == [v15, v16]
+    assert merged["status"] == "approved"
+    assert topic_entries_count(paths, topic_id) == 1
+
+
+def test_multi_verse_reject_request_returns_422(client):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+    resp = create_entry(client, topic_id, v15, v16, status="rejected")
+    assert resp.status_code == 422
+
+
+def test_patch_reject_on_multi_verse_entry_returns_422(client):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+    entry = create_entry(client, topic_id, v15, v16).json()
+
+    resp = client.patch(
+        f"/api/topics/{topic_id}/entries/{entry['entry_id']}", json={"status": "rejected"}
+    )
+    assert resp.status_code == 422
+
+
+def test_patch_reject_on_singleton_entry_succeeds(client):
+    topic_id = create_topic(client, "Prayer")
+    entry = create_entry(client, topic_id, _TEST_VERSE["id"]).json()
+
+    resp = client.patch(
+        f"/api/topics/{topic_id}/entries/{entry['entry_id']}", json={"status": "rejected"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "rejected"
+
+
+def test_delete_entry_removes_all_verse_links(client, paths):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+    entry = create_entry(client, topic_id, v15, v16).json()
+    assert topic_verses_count(paths, topic_id) == 2
+
+    resp = client.delete(f"/api/topics/{topic_id}/entries/{entry['entry_id']}")
+    assert resp.status_code == 204
+    assert topic_verses_count(paths, topic_id) == 0
+
+
+# ---------------------------------------------------------------------------
+# 11. GET /api/topics/{id} ordering and passage_count/verse_count (round 6)
+# ---------------------------------------------------------------------------
+
+
+def test_get_topic_entries_ordered_by_lowest_verse_id(client):
+    topic_id = create_topic(client, "Prayer")
+    later = create_entry(client, topic_id, _SECOND_TEST_VERSE["id"]).json()
+    earlier = create_entry(client, topic_id, _TEST_VERSE["id"]).json()
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    assert [e["entry_id"] for e in topic["entries"]] == [
+        earlier["entry_id"], later["entry_id"]
+    ]
+
+
+def test_passage_count_and_verse_count_arithmetic(client):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+    v23 = _verse_id_for("3 Nephi", 18, 23)
+
+    create_entry(client, topic_id, v15, v16)  # a 2-verse passage
+    create_entry(client, topic_id, v23, v23)  # a singleton
+    create_entry(client, topic_id, _TEST_VERSE["id"], status="rejected")  # excluded
+
+    topic = client.get(f"/api/topics/{topic_id}").json()
+    assert topic["passage_count"] == 2
+    assert topic["verse_count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 12. Export — hyphen dash, verse_count, deterministic order (round 6)
+# ---------------------------------------------------------------------------
+
+
+def test_export_uses_hyphen_dash_and_verse_count(client, paths):
+    topic_id = create_topic(client, "Prayer")
+    v15 = _verse_id_for("3 Nephi", 18, 15)
+    v16 = _verse_id_for("3 Nephi", 18, 16)
+    create_entry(client, topic_id, v15, v16)
+
+    with open(paths["export"]) as f:
+        export = json.load(f)
+    prayer = next(t for t in export if t["name"] == "Prayer")
+    entry = prayer["verses"][0]
+    assert entry["reference"] == "3 Nephi 18:15-16"
+    assert "–" not in entry["reference"]
+    assert entry["verse_count"] == 2
+
+
+def test_export_order_is_deterministic_by_lowest_verse_id(client, paths):
+    topic_id = create_topic(client, "Prayer")
+    create_entry(client, topic_id, _SECOND_TEST_VERSE["id"])
+    create_entry(client, topic_id, _TEST_VERSE["id"])
+
+    with open(paths["export"]) as f:
+        export = json.load(f)
+    prayer = next(t for t in export if t["name"] == "Prayer")
+    refs = [v["reference"] for v in prayer["verses"]]
+    assert refs == [
+        f"{_TEST_VERSE['book']} {_TEST_VERSE['chapter']}:{_TEST_VERSE['verse']}",
+        f"{_SECOND_TEST_VERSE['book']} {_SECOND_TEST_VERSE['chapter']}:{_SECOND_TEST_VERSE['verse']}",
+    ]
