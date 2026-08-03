@@ -124,10 +124,22 @@ python topical-guide/server.py       # binds to 127.0.0.1:8000
 ```
 
 Backend is FastAPI, frontend is a single vanilla-JS page (`static/index.html`)
-with hash routing — no build step, matching the repo's other static-HTML
-tools. There's no auth or deployment; it's meant to run locally on your own
-machine. `pip install -r topical-guide/requirements.txt` now also pulls in
-`anthropic` and `python-dotenv` for the AI helpers below.
+plus `static/markdown.js` — no build step, matching the repo's other
+static-HTML tools. There's no auth or deployment; it's meant to run locally on
+your own machine. `pip install -r topical-guide/requirements.txt` now also
+pulls in `anthropic` and `python-dotenv` for the AI helpers below.
+
+Tests:
+
+```bash
+pytest topical-guide/                        # the backend
+node --test "topical-guide/static/*.test.js" # the notes markdown renderer
+```
+
+The JS tests use only Node's built-in test runner — **nothing to install**, no
+`package.json`, no `node_modules`. (Pass the glob, not the bare directory:
+Node 26 resolves a directory argument as a module path rather than scanning
+it.)
 
 ### Editing and deleting topics
 
@@ -256,7 +268,11 @@ works normally.
   shows a readable diff of your curation over time. Also **committed**. Each
   entry carries a `reference` (hyphen, not en dash — `3 Nephi 18:15-16` —
   since this file is a git artifact you grep and diff, and ASCII keeps it
-  so) and a `verse_count`.
+  so) and a `verse_count`. Each topic also carries its `notes` document as an
+  **array of lines** (`[]` when empty) rather than one string: a
+  multi-paragraph document JSON-encoded as a single value would show up as one
+  3,000-character line whose every edit is an unreadable whole-line change,
+  while an array of lines diffs the way prose should.
 - `scriptures/scriptures_fts.db` — same derived, gitignored full-text index
   described above. The server refuses to start without it.
 - `topical-guide/ai_log.db` and `topical-guide/.env` — gitignored. Call logs
@@ -310,6 +326,37 @@ when the selection exactly matches one. Notes themselves stay editable only
 on the Study tab — the panel does one job. Escape clears an active selection
 before it closes the panel, and closes the panel before it cancels topic
 edit mode.
+
+### Notes
+
+Each topic gets **one long-form document**, on a third tab beside Study and
+Curate. It's the place for the thought that isn't about a single verse — *these
+eleven passages are really making three arguments, and the third only works if
+you grant the first.* A topic's `description` stays a short blurb under the
+title, and a passage's note stays a plain single-line caption; neither of those
+changes.
+
+Notes are written in **markdown** and read as a rendered document. The
+supported subset is document essentials and nothing more: `#`/`##`/`###`
+headings, `**bold**`, `*italic*`, `-` bullets with one level of nesting, `1.`
+numbered lists, `>` blockquotes, `[text](url)` links, `---` rules, and
+blank-line-separated paragraphs. No tables, code fences, inline code, or
+images.
+
+Editing is a plain textarea with a formatting toolbar (the buttons apply to
+every line the selection touches, and replace an existing line marker rather
+than stacking onto it), plus **⌘B**, **⌘I**, and **⌘S**. **Saving is always
+explicit** — there's no autosave. Anything that would navigate away from
+unsaved edits is guarded: switching tabs, the back link, and Escape all raise
+a *Discard unsaved notes?* prompt, and a reload triggers the browser's own
+leave-site dialog. Retyping your way back to the saved text counts as clean
+and passes without a prompt.
+
+Notes are rendered safely by construction: the whole document is HTML-escaped
+before any markdown rule runs, so typing `<script>alert(1)</script>` into a
+note displays it as visible text, and only `http(s)` and in-page `#anchor`
+links become anchors — a `javascript:` or `data:` URL renders as literal text
+instead.
 
 ## General Conference Talk Corpus Builder
 

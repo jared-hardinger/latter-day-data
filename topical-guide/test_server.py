@@ -915,3 +915,147 @@ def test_export_order_is_deterministic_by_lowest_verse_id(client, paths):
         f"{_TEST_VERSE['book']} {_TEST_VERSE['chapter']}:{_TEST_VERSE['verse']}",
         f"{_SECOND_TEST_VERSE['book']} {_SECOND_TEST_VERSE['chapter']}:{_SECOND_TEST_VERSE['verse']}",
     ]
+
+
+# ---------------------------------------------------------------------------
+# 13. Topic notes — one long-form markdown document per topic (round 7)
+# ---------------------------------------------------------------------------
+
+
+def test_get_topic_returns_notes(client):
+    topic_id = create_topic(client, "Prayer")
+    assert client.get(f"/api/topics/{topic_id}").json()["notes"] == ""
+
+    doc = "# Three arguments\n\nThe third only works if you grant the first."
+    resp = client.patch(f"/api/topics/{topic_id}", json={"notes": doc})
+    assert resp.status_code == 200
+    assert client.get(f"/api/topics/{topic_id}").json()["notes"] == doc
+
+
+def test_list_topics_omits_notes(client):
+    topic_id = create_topic(client, "Prayer")
+    client.patch(f"/api/topics/{topic_id}", json={"notes": "a document"})
+
+    topics = client.get("/api/topics").json()
+    assert len(topics) == 1
+    assert "notes" not in topics[0]
+
+
+def test_patch_with_only_notes_leaves_name_and_description_alone(client):
+    topic_id = create_topic(client, "Prayer", "General pattern of prayer.")
+    resp = client.patch(f"/api/topics/{topic_id}", json={"notes": "a document"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Prayer"
+    assert resp.json()["description"] == "General pattern of prayer."
+
+
+def test_patch_with_only_name_leaves_notes_alone(client):
+    # The header edit form sends name and description and no notes. Without
+    # the `is not None` fallback, renaming a topic would blank its document.
+    topic_id = create_topic(client, "Prayer", "General pattern of prayer.")
+    client.patch(f"/api/topics/{topic_id}", json={"notes": "a document"})
+
+    resp = client.patch(f"/api/topics/{topic_id}", json={"name": "Prayerfulness"})
+    assert resp.status_code == 200
+    assert client.get(f"/api/topics/{topic_id}").json()["notes"] == "a document"
+
+
+def test_notes_crlf_normalized_to_lf(client):
+    topic_id = create_topic(client, "Prayer")
+    client.patch(f"/api/topics/{topic_id}", json={"notes": "a\r\nb"})
+    assert client.get(f"/api/topics/{topic_id}").json()["notes"] == "a\nb"
+
+
+def test_notes_trailing_blank_lines_stripped(client):
+    topic_id = create_topic(client, "Prayer")
+    client.patch(f"/api/topics/{topic_id}", json={"notes": "a\n\n\n"})
+    assert client.get(f"/api/topics/{topic_id}").json()["notes"] == "a"
+
+
+def test_export_notes_is_line_array(client, paths):
+    topic_id = create_topic(client, "Prayer")
+    client.patch(f"/api/topics/{topic_id}", json={"notes": "# Head\n\nA paragraph."})
+
+    with open(paths["export"]) as f:
+        export = json.load(f)
+    prayer = next(t for t in export if t["name"] == "Prayer")
+    assert prayer["notes"] == ["# Head", "", "A paragraph."]
+
+
+def test_export_notes_empty_is_empty_list(client, paths):
+    create_topic(client, "Prayer")
+
+    with open(paths["export"]) as f:
+        export = json.load(f)
+    prayer = next(t for t in export if t["name"] == "Prayer")
+    assert prayer["notes"] == []
+
+
+def test_notes_migration_adds_column_and_preserves_rows(tmp_path, monkeypatch):
+    guide_db_path = str(tmp_path / "pre_notes_guide.db")
+    export_path = str(tmp_path / "pre_notes_guide_export.json")
+    monkeypatch.setattr(server, "GUIDE_DB_PATH", guide_db_path)
+    monkeypatch.setattr(server, "EXPORT_PATH", export_path)
+
+    # A pre-round-7 topics table (no notes column) alongside the *current*
+    # entry tables, so this exercises the notes migration alone rather than
+    # both migrations at once.
+    conn = sqlite3.connect(guide_db_path)
+    conn.executescript(
+        """
+        CREATE TABLE topics (
+            id          INTEGER PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE topic_entries (
+            id        INTEGER PRIMARY KEY,
+            topic_id  INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+            status    TEXT NOT NULL CHECK (status IN ('approved', 'rejected')),
+            note      TEXT NOT NULL DEFAULT '',
+            source    TEXT NOT NULL CHECK (source IN ('exact','prefix','phrase','semantic','manual')),
+            added_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE topic_verses (
+            topic_id  INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+            entry_id  INTEGER NOT NULL REFERENCES topic_entries(id) ON DELETE CASCADE,
+            verse_id  INTEGER NOT NULL,
+            PRIMARY KEY (topic_id, verse_id)
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO topics (id, name, description) VALUES (1, 'Prayer', 'A blurb.')"
+    )
+    conn.execute(
+        """INSERT INTO topic_entries (id, topic_id, status, note, source)
+           VALUES (1, 1, 'approved', 'a passage note', 'manual')"""
+    )
+    conn.execute(
+        "INSERT INTO topic_verses (topic_id, entry_id, verse_id) VALUES (1, 1, ?)",
+        (_TEST_VERSE["id"],),
+    )
+    conn.commit()
+    conn.close()
+
+    server.init_guide_db()
+
+    conn = sqlite3.connect(guide_db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(topics)")}
+        assert "notes" in cols
+        assert server.needs_notes_migration(conn) is False
+
+        topic = conn.execute("SELECT * FROM topics WHERE id = 1").fetchone()
+        assert topic["name"] == "Prayer"
+        assert topic["description"] == "A blurb."
+        assert topic["notes"] == ""
+
+        # Nothing else was rewritten on the way through.
+        entry = conn.execute("SELECT * FROM topic_entries WHERE id = 1").fetchone()
+        assert entry["note"] == "a passage note"
+        assert conn.execute("SELECT COUNT(*) FROM topic_verses").fetchone()[0] == 1
+    finally:
+        conn.close()

@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS topics (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL DEFAULT '',
+    notes       TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -133,12 +134,28 @@ def migrate_to_entries(conn):
     conn.execute("PRAGMA foreign_keys = ON")
 
 
+def needs_notes_migration(conn) -> bool:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(topics)")}
+    return bool(cols) and "notes" not in cols
+
+
+def migrate_add_notes(conn):
+    """`CREATE TABLE IF NOT EXISTS` never alters an existing table, so a
+    guide.db created before round 7 does not pick up the notes column from
+    SCHEMA. Add it explicitly. `DEFAULT ''` means every existing topic comes
+    out with empty notes and no existing row is rewritten."""
+    with conn:
+        conn.execute("ALTER TABLE topics ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
+
+
 def init_guide_db():
     conn = sqlite3.connect(GUIDE_DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     if needs_entry_migration(conn):
         migrate_to_entries(conn)
+    if needs_notes_migration(conn):
+        migrate_add_notes(conn)
     conn.executescript(SCHEMA)
     conn.commit()
     conn.close()
@@ -272,7 +289,7 @@ def write_export(guide_db: sqlite3.Connection):
     fts_db.row_factory = sqlite3.Row
     try:
         topics = guide_db.execute(
-            "SELECT id, name, description FROM topics ORDER BY name"
+            "SELECT id, name, description, notes FROM topics ORDER BY name"
         ).fetchall()
         export = []
         for t in topics:
@@ -300,6 +317,11 @@ def write_export(guide_db: sqlite3.Connection):
                 {
                     "name": t["name"],
                     "description": t["description"],
+                    # A line array, not one long string: a multi-paragraph
+                    # document JSON-encoded as a single value would diff as one
+                    # unreadable whole-line change on every edit. The guard
+                    # matters — "".split("\n") is [""], not [].
+                    "notes": t["notes"].split("\n") if t["notes"] else [],
                     "verses": verses,
                 }
             )
@@ -308,6 +330,15 @@ def write_export(guide_db: sqlite3.Connection):
     with open(EXPORT_PATH, "w") as f:
         json.dump(export, f, indent=2)
         f.write("\n")
+
+
+def normalize_notes(text: str) -> str:
+    """Textareas can submit CRLF line endings, and a stray \\r on the end of
+    every line would poison the line-array export in guide_export.json —
+    invisible in the browser, ugly and diff-noisy in git. Trailing blank lines
+    go for the same reason: they accumulate as empty array entries every time
+    you press return before saving."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +354,8 @@ class TopicCreate(BaseModel):
 class TopicUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    # No length cap: a description is a blurb, a notes document is not.
+    notes: Optional[str] = None
 
 
 def topic_dict(row, approved_count: int) -> dict:
@@ -377,10 +410,16 @@ def update_topic(topic_id: int, body: TopicUpdate, guide_db=Depends(get_guide_db
     description = (
         body.description if body.description is not None else existing["description"]
     )
+    # The `is not None` fallback is what stops the topic header's Edit form —
+    # which sends name and description and no notes — from silently blanking a
+    # whole document every time a topic is renamed.
+    notes = (
+        normalize_notes(body.notes) if body.notes is not None else existing["notes"]
+    )
     try:
         guide_db.execute(
-            "UPDATE topics SET name = ?, description = ? WHERE id = ?",
-            (name, description, topic_id),
+            "UPDATE topics SET name = ?, description = ?, notes = ? WHERE id = ?",
+            (name, description, notes, topic_id),
         )
         guide_db.commit()
     except sqlite3.IntegrityError:
@@ -450,6 +489,7 @@ def get_topic(
         "id": topic["id"],
         "name": topic["name"],
         "description": topic["description"],
+        "notes": topic["notes"],
         "entries": entries,
         "volume_counts": list(volume_counts.values()),
         "passage_count": len(entries),

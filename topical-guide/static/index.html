@@ -334,10 +334,55 @@ body.panel-open { padding-right: calc(min(440px, 100vw) + 2rem); }
 @media (max-width: 900px) {
   body.panel-open { padding-right: 2rem; }
 }
+
+.notes-head { display: flex; justify-content: flex-end; margin-bottom: 0.6rem; }
+.notes-toolbar {
+  display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.notes-toolbar button { padding: 0.35rem 0.6rem; font-size: 0.85rem; min-width: 2.3rem; }
+.notes-toolbar-gap { width: 0.6rem; }
+.notes-textarea {
+  width: 100%;
+  min-height: 60vh;
+  line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9rem;
+  resize: vertical;
+}
+.notes-actions { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.8rem; }
+
+/* Everything below is scoped to .notes-doc on purpose. The global h1 rule
+   (1.9rem, #fff) styles page titles; unscoped, a heading inside a note would
+   render at the same weight as the topic name itself. */
+.notes-doc { line-height: 1.7; color: #ddd; }
+.notes-doc > * + * { margin-top: 0.9rem; }
+.notes-doc h1 { font-size: 1.35rem; color: #fff; font-weight: 600; margin-top: 1.7rem; }
+.notes-doc h2 { font-size: 1.15rem; color: #fff; font-weight: 600; margin-top: 1.5rem; }
+.notes-doc h3 { font-size: 1rem; color: #cfd8e8; font-weight: 600; margin-top: 1.2rem; }
+.notes-doc > :first-child { margin-top: 0; }
+.notes-doc strong { color: #fff; font-weight: 600; }
+.notes-doc em { font-style: italic; }
+.notes-doc ul, .notes-doc ol { padding-left: 1.4rem; }
+.notes-doc li { margin-bottom: 0.35rem; }
+.notes-doc li > ul, .notes-doc li > ol { margin-top: 0.35rem; }
+.notes-doc blockquote {
+  padding: 0.5rem 0.9rem;
+  background: #0f1626;
+  border-left: 3px solid #4a90d9;
+  color: #ccc;
+  font-style: italic;
+}
+.notes-doc hr { border: none; border-top: 1px solid #2a3a5e; margin: 1.5rem 0; }
+.notes-doc a { color: #4a90d9; }
 </style>
 </head>
 <body>
 <div id="app"></div>
+<!-- Plain classic script, deliberately not deferred and not a module: classic
+     scripts run in document order, so window.renderMarkdown is defined before
+     the inline script below can call it. -->
+<script src="markdown.js"></script>
 <script>
 const API = "/api";
 
@@ -403,13 +448,25 @@ async function render() {
 window.addEventListener("hashchange", render);
 window.addEventListener("DOMContentLoaded", render);
 
-// Escape closes the delete modal if one is open, otherwise cancels topic
-// edit mode if that's active. One listener, added once; editModeActive and
-// cancelEditFn are updated by whichever render function is currently live.
+// The browser supplies its own generic dialog here; custom text is not
+// allowed. Ugly, but losing a half-written document to a reflexive Cmd-R is
+// worse.
+window.addEventListener("beforeunload", (e) => {
+  if (!notesDirty()) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
+// Escape closes whichever modal is open, otherwise works down the stack of
+// things that are "on top": the chapter panel's selection, the panel itself,
+// an in-progress notes edit, then topic edit mode. One listener, added once;
+// editModeActive and cancelEditFn are updated by whichever render function is
+// currently live. Escape on the unsaved-notes modal means "Keep editing",
+// which is the safe default.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (document.querySelector(".modal-backdrop")) {
-    closeDeleteModal();
+    closeModal();
     return;
   }
   if (chapterPanel && panelSelection) {
@@ -419,6 +476,10 @@ document.addEventListener("keydown", (e) => {
   }
   if (chapterPanel) {
     closeChapterPanel();
+    return;
+  }
+  if (notesEditing && activeTopic) {
+    cancelNotesEdit(activeTopic);
     return;
   }
   if (editModeActive && cancelEditFn) {
@@ -546,25 +607,35 @@ async function renderTopicPage(app, topicId, activeTab) {
     <div class="tabs">
       <button class="tab-btn" data-tab="study">Study</button>
       <button class="tab-btn" data-tab="curate">Curate</button>
+      <button class="tab-btn" data-tab="notes">Notes</button>
     </div>
     <div id="tab-content"></div>
   `;
 
   renderTopicHeaderView(topic);
 
+  const backLink = app.querySelector(".back-link");
+  backLink.addEventListener("click", (e) => {
+    if (!notesDirty()) return;        // let the anchor navigate normally
+    e.preventDefault();
+    guardNotesNavigation(() => { notesEditing = false; location.hash = "#/"; }, null);
+  });
+
   const tabButtons = app.querySelectorAll(".tab-btn");
   tabButtons.forEach(btn => {
     btn.classList.toggle("active", btn.dataset.tab === activeTab);
     btn.addEventListener("click", () => {
-      renderTopicPage(app, topicId, btn.dataset.tab);
+      guardNotesNavigation(() => renderTopicPage(app, topicId, btn.dataset.tab), btn);
     });
   });
 
   const content = document.getElementById("tab-content");
   if (activeTab === "study") {
     renderStudyTab(content, topic);
-  } else {
+  } else if (activeTab === "curate") {
     renderCurateTab(content, topic);
+  } else {
+    renderNotesTab(content, topic);
   }
 }
 
@@ -710,9 +781,9 @@ function openDeleteModal(topic, triggerBtn) {
   document.body.appendChild(modal);
 
   modal.addEventListener("click", (e) => {
-    if (e.target === modal) closeDeleteModal();
+    if (e.target === modal) closeModal();
   });
-  document.getElementById("delete-modal-cancel").addEventListener("click", () => closeDeleteModal());
+  document.getElementById("delete-modal-cancel").addEventListener("click", () => closeModal());
   document.getElementById("delete-modal-confirm").addEventListener("click", async () => {
     const errBox = document.getElementById("delete-modal-error");
     try {
@@ -726,7 +797,10 @@ function openDeleteModal(topic, triggerBtn) {
   document.getElementById("delete-modal-cancel").focus();
 }
 
-function closeDeleteModal() {
+// Removes whatever .modal-backdrop is present — the delete modal and the
+// unsaved-notes modal both. Deliberately not aliased under a second name:
+// two ways to remove one modal is the shape of a bug this repo has hit.
+function closeModal() {
   const modal = document.querySelector(".modal-backdrop");
   if (!modal) return;
   const triggerBtn = modal._triggerBtn;
@@ -1244,6 +1318,203 @@ function wireNoteRow(root, topicId, onSaved) {
       fillBtn.textContent = originalLabel;
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Notes tab — one long-form markdown document per topic. Markdown is the
+// stored form; renderMarkdown (markdown.js) produces the reading view.
+// ---------------------------------------------------------------------------
+
+// Module-level, because the dirty check is consulted from the tab buttons,
+// the back link, beforeunload, and the Escape chain — none of which holds a
+// reference to the editor.
+let notesEditing = false;
+let notesOriginal = "";
+
+function notesDirty() {
+  if (!notesEditing) return false;
+  const ta = document.getElementById("notes-textarea");
+  return !!ta && ta.value !== notesOriginal;
+}
+
+function renderNotesTab(content, topic) {
+  content.innerHTML = `<div id="notes-pane"></div>`;
+  renderNotesView(topic);
+}
+
+function renderNotesView(topic) {
+  notesEditing = false;
+  notesOriginal = "";
+  const pane = document.getElementById("notes-pane");
+  // renderMarkdown's output is inserted as HTML by design — it returns HTML,
+  // and it escaped its input before parsing it. Escaping the output here
+  // would display raw tags instead of a document.
+  const body = topic.notes
+    ? `<div class="notes-doc">${renderMarkdown(topic.notes)}</div>`
+    : `<p class="empty-state">No notes yet. Write what you're working out about this topic — headings, paragraphs, bullets.</p>`;
+  pane.innerHTML = `
+    <div class="notes-head">
+      <button type="button" class="link-btn" id="notes-edit-btn">${topic.notes ? "Edit notes" : "Write notes"}</button>
+    </div>
+    ${body}
+  `;
+  document.getElementById("notes-edit-btn").addEventListener("click", () => renderNotesEditor(topic));
+}
+
+function renderNotesEditor(topic) {
+  const pane = document.getElementById("notes-pane");
+  pane.innerHTML = `
+    <div class="notes-toolbar">
+      <button type="button" data-md="h1" title="Heading 1">H1</button>
+      <button type="button" data-md="h2" title="Heading 2">H2</button>
+      <button type="button" data-md="h3" title="Heading 3">H3</button>
+      <span class="notes-toolbar-gap"></span>
+      <button type="button" data-md="bold" title="Bold (&#8984;B)"><strong>B</strong></button>
+      <button type="button" data-md="italic" title="Italic (&#8984;I)"><em>I</em></button>
+      <span class="notes-toolbar-gap"></span>
+      <button type="button" data-md="bullet" title="Bulleted list">&#8226;</button>
+      <button type="button" data-md="number" title="Numbered list">1.</button>
+      <button type="button" data-md="quote" title="Blockquote">&rdquo;</button>
+      <button type="button" data-md="link" title="Link">&#128279;</button>
+    </div>
+    <textarea id="notes-textarea" class="notes-textarea" spellcheck="true"></textarea>
+    <div class="error-msg" id="notes-error"></div>
+    <div class="notes-actions">
+      <button type="button" class="primary" id="notes-save-btn">Save notes</button>
+      <button type="button" id="notes-cancel-btn">Cancel</button>
+    </div>
+  `;
+
+  const ta = document.getElementById("notes-textarea");
+  // Assigned as a property, never interpolated into the template above: a
+  // note containing the literal text </textarea> would otherwise close the
+  // element early.
+  ta.value = topic.notes;
+  notesOriginal = topic.notes;
+  notesEditing = true;
+
+  pane.querySelectorAll(".notes-toolbar button").forEach(btn => {
+    btn.addEventListener("click", () => applyNotesFormat(ta, btn.dataset.md));
+  });
+
+  ta.addEventListener("keydown", (e) => {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    const key = e.key.toLowerCase();
+    if (key === "b") { e.preventDefault(); applyNotesFormat(ta, "bold"); }
+    else if (key === "i") { e.preventDefault(); applyNotesFormat(ta, "italic"); }
+    else if (key === "s") { e.preventDefault(); saveNotes(topic, ta); }
+  });
+
+  document.getElementById("notes-save-btn").addEventListener("click", () => saveNotes(topic, ta));
+  document.getElementById("notes-cancel-btn").addEventListener("click", () => cancelNotesEdit(topic));
+
+  ta.focus();
+}
+
+async function saveNotes(topic, ta) {
+  const errBox = document.getElementById("notes-error");
+  const saveBtn = document.getElementById("notes-save-btn");
+  errBox.textContent = "";
+  saveBtn.disabled = true;
+  try {
+    await api(`/topics/${topic.id}`, "PATCH", { notes: ta.value });
+    // Mirror the server's normalization locally. PATCH deliberately does not
+    // echo notes back, so without this the in-memory topic and the stored row
+    // disagree about trailing newlines and the next dirty check lies.
+    topic.notes = ta.value.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+    if (activeTopic && activeTopic.id === topic.id) activeTopic.notes = topic.notes;
+    renderNotesView(topic);
+  } catch (err) {
+    errBox.textContent = err.message;
+    saveBtn.disabled = false;
+  }
+}
+
+function cancelNotesEdit(topic) {
+  if (!notesDirty()) { renderNotesView(topic); return; }
+  openUnsavedModal(() => renderNotesView(topic), document.getElementById("notes-cancel-btn"));
+}
+
+const NOTES_LINE_PREFIX = { h1: "# ", h2: "## ", h3: "### ", bullet: "- ", quote: "> " };
+
+// Any prefix this toolbar can produce, so pressing H2 on an existing "# x"
+// replaces the marker instead of stacking a second one onto it.
+const NOTES_PREFIX_STRIP_RE = /^(\s*)(#{1,3}\s+|-\s+|\d+\.\s+|>\s?)/;
+
+function applyNotesFormat(ta, kind) {
+  const value = ta.value;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+
+  if (kind === "bold" || kind === "italic") {
+    const marker = kind === "bold" ? "**" : "*";
+    const selected = value.slice(start, end) || (kind === "bold" ? "bold text" : "italic text");
+    const replacement = marker + selected + marker;
+    ta.value = value.slice(0, start) + replacement + value.slice(end);
+    ta.selectionStart = start + marker.length;
+    ta.selectionEnd = start + marker.length + selected.length;
+    ta.focus();
+    return;
+  }
+
+  if (kind === "link") {
+    const selected = value.slice(start, end) || "link text";
+    const replacement = `[${selected}](https://)`;
+    ta.value = value.slice(0, start) + replacement + value.slice(end);
+    // Caret lands inside the parentheses, where the URL goes.
+    const caret = start + replacement.length - 1;
+    ta.selectionStart = caret;
+    ta.selectionEnd = caret;
+    ta.focus();
+    return;
+  }
+
+  // Line-prefix kinds apply to every line the selection touches, so selecting
+  // three lines and pressing the bullet button produces three bullets.
+  const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+  let lineEnd = value.indexOf("\n", end);
+  if (lineEnd === -1) lineEnd = value.length;
+
+  const prefixed = value.slice(lineStart, lineEnd).split("\n").map((line, idx) => {
+    const bare = line.replace(NOTES_PREFIX_STRIP_RE, "$1");
+    return kind === "number" ? `${idx + 1}. ${bare}` : NOTES_LINE_PREFIX[kind] + bare;
+  }).join("\n");
+
+  ta.value = value.slice(0, lineStart) + prefixed + value.slice(lineEnd);
+  ta.selectionStart = lineStart;
+  ta.selectionEnd = lineStart + prefixed.length;
+  ta.focus();
+}
+
+function guardNotesNavigation(proceed, triggerBtn) {
+  if (!notesDirty()) { proceed(); return; }
+  openUnsavedModal(proceed, triggerBtn);
+}
+
+function openUnsavedModal(onDiscard, triggerBtn) {
+  const modal = el(`
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true">
+        <h2>Discard unsaved notes?</h2>
+        <p>Your edits to these notes haven't been saved. Leaving now loses them.</p>
+        <div class="modal-actions">
+          <button type="button" id="unsaved-modal-cancel">Keep editing</button>
+          <button type="button" class="btn-danger" id="unsaved-modal-confirm">Discard</button>
+        </div>
+      </div>
+    </div>
+  `);
+  modal._triggerBtn = triggerBtn;
+  document.body.appendChild(modal);
+
+  modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+  document.getElementById("unsaved-modal-cancel").addEventListener("click", () => closeModal());
+  document.getElementById("unsaved-modal-confirm").addEventListener("click", () => {
+    closeModal();
+    notesEditing = false;   // before onDiscard, so a nav guard can't re-trigger
+    onDiscard();
+  });
+  document.getElementById("unsaved-modal-cancel").focus();
 }
 
 // ---------------------------------------------------------------------------

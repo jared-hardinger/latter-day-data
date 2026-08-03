@@ -42,6 +42,10 @@ tools in the repo, but reads the shared scripture database in `scriptures/`.
 8. **Notes are in the schema from day one** (a text column per topic–verse
    link and a description per topic), even though rich notes UI can come
    later. Notes will eventually feed semantic search and LLM features.
+   *(Round 7 delivered the topic-level half of "later": a long-form markdown
+   document per topic, on its own tab. Per-passage notes remain plain
+   single-line text by decision — a caption that needs headings is really a
+   topic note.)*
 9. **Verse order within a topic is canonical scripture order** — verse IDs
    are sequential in canonical order, so `ORDER BY verse_id` suffices.
 
@@ -79,6 +83,8 @@ topical-guide/
   guide_export.json    # deterministic text export (committed; rewritten on mutation)
   static/
     index.html         # the whole UI: vanilla JS, hash routing
+    markdown.js        # the topic-notes markdown renderer (round 7)
+    markdown.test.js   # its tests; `node --test`, no npm deps, no build step
 ```
 
 ## Schema (`guide.db`)
@@ -91,19 +97,32 @@ CREATE TABLE IF NOT EXISTS topics (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL DEFAULT '',
+    notes       TEXT NOT NULL DEFAULT '',  -- the long-form markdown document (round 7)
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE TABLE IF NOT EXISTS topic_verses (
-    topic_id  INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
-    verse_id  INTEGER NOT NULL,  -- verses.id in scriptures.db (stable IDs)
-    status    TEXT NOT NULL CHECK (status IN ('approved', 'rejected')),
-    note      TEXT NOT NULL DEFAULT '',
-    source    TEXT NOT NULL CHECK (source IN ('exact','prefix','phrase','semantic','manual')),
-    added_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (topic_id, verse_id)
-);
 ```
+
+> **Stale — this is the pre-round-6 `topic_verses`.** Kept rather than deleted
+> so the record stays honest about what this section once described. Round 6
+> split it into `topic_entries` (which now carries `status`, `note`, `source`,
+> `added_at`) plus a `topic_verses` that only maps entries to verses. The
+> authoritative DDL is `SCHEMA` in `server.py`.
+>
+> ```sql
+> CREATE TABLE IF NOT EXISTS topic_verses (
+>     topic_id  INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+>     verse_id  INTEGER NOT NULL,  -- verses.id in scriptures.db (stable IDs)
+>     status    TEXT NOT NULL CHECK (status IN ('approved', 'rejected')),
+>     note      TEXT NOT NULL DEFAULT '',
+>     source    TEXT NOT NULL CHECK (source IN ('exact','prefix','phrase','semantic','manual')),
+>     added_at  TEXT NOT NULL DEFAULT (datetime('now')),
+>     PRIMARY KEY (topic_id, verse_id)
+> );
+> ```
+
+`CREATE TABLE IF NOT EXISTS` never alters an existing table, so a column added
+to `SCHEMA` also needs an explicit `ALTER TABLE` migration for databases that
+already exist — see `needs_notes_migration` / `migrate_add_notes`.
 
 `verse_id` cannot be a real foreign key (different database file); instead
 the server validates on insert that the ID exists in the scriptures DB and
@@ -150,6 +169,11 @@ by name; within each topic, verses ordered by `verse_id`; each entry as
 `{reference: "Alma 37:37", status, source, note}`. Stable key order and
 `indent=2` so diffs are clean. Do not include full verse text (it lives in
 scriptures.db; the export is a curation record, not a scripture copy).
+
+Each topic also carries `notes` — its long-form document as an **array of
+lines**, `[]` when empty (round 7). An array, not a string, because a
+multi-paragraph document JSON-encoded as one value diffs as a single
+unreadable whole-line change on every edit.
 
 ## Frontend (Phase 1)
 
@@ -279,6 +303,52 @@ A verse can now be dropped from a topic straight from the Study tab, via a
   source, and note; `added_at` becomes the time of the undo. The Curate
   tab's cached results are patched in place so the two tabs never disagree
   about a verse's status mid-session.
+
+## Topic notes (round 7 — shipped)
+
+One long-form markdown document per topic, on a third tab beside Study and
+Curate. Full design lives in `specs/TOPIC-NOTES-SPEC.md`. This is the "rich
+notes UI" decision 8 parked on day one. (Rounds 4, 5, and 6 shipped without a
+section here; that gap is still open.)
+
+- **One document per topic, not a list of notes.** A `notes` column on
+  `topics`, not a `topic_notes` table — structure inside a topic's writing
+  comes from headings, which is what headings are for. A list of titled
+  documents would add ordering and deletion UI to buy what `## A heading`
+  already buys.
+- **Markdown is the source of truth; the reading view is rendered HTML.**
+  Editing is a `<textarea>` with a formatting toolbar and an explicit save —
+  no WYSIWYG, no contenteditable, no vendored editor, no build step. The
+  stored value stays plain text: greppable, diffable, consistent with every
+  other artifact this project commits.
+- **The supported subset is document essentials and nothing more** — three
+  heading levels, bold, italic, bullets with one level of nesting, numbered
+  lists, blockquotes, links, rules, paragraphs. Tables are the fiddliest part
+  of any markdown parser and would be the largest source of renderer bugs for
+  the least return.
+- **The renderer escapes its entire input before any markdown rule runs.**
+  That is the security property the feature rests on — raw HTML can't reach
+  the DOM because by then there are no `<` characters left. Its consequence is
+  that block rules match the *escaped* text (`&gt;` for a blockquote, never
+  `>`). `safeHref` allows only `http(s)` and in-page anchors.
+- **`renderMarkdown` lives in `static/markdown.js` and is tested with
+  `node --test`.** It's a hand-rolled parser and the densest logic in the
+  round, but also a pure `string → string` function — the cheapest possible
+  thing to test. Node's runner is built in, so this added no npm packages, no
+  `package.json`, and no build step.
+- **`PATCH /api/topics/{id}` gained a `notes` field** rather than a dedicated
+  endpoint; `TopicUpdate` already had the right partial semantics. The `is not
+  None` fallback is load-bearing: the header edit form sends `name` and
+  `description` and no `notes`, and without it a rename would blank a
+  document. **`GET /api/topics` deliberately does not return `notes`** — the
+  home list has no use for every topic's full document. A home-page notes
+  indicator is the feature that would reopen that.
+- **The export stores notes as an array of lines** (see *Export* above).
+- **Explicit save, with a navigation guard.** Tab switches, the back link, and
+  Escape all route through a *Discard unsaved notes?* modal when the textarea
+  differs from what was loaded; `beforeunload` catches a reflexive Cmd-R with
+  the browser's own dialog. `closeDeleteModal` was renamed to `closeModal`
+  now that two modal types share it.
 
 ## Later phases (do NOT build now — context only)
 
